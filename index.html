@@ -1129,7 +1129,7 @@ function vInicio() {
       <p class="detalle">En total, ${horas(total)} a la semana, y ningún día pasa de 2 horas. Es un poco cada día: lo que no hagas un día no se acumula. Si usas tarjetas (como Anki), sus repasos van aparte.</p>`;
   } else if (i.paso === 3) {
     const lista = [...i.asignaturas];
-    cuerpo = `${cab("¿Cómo llevas lo que habéis dado?", "Una respuesta por asignatura. Después se ajusta solo con lo que hagas en la app, y tema a tema lo puedes cambiar en Temario.")}
+    cuerpo = `${cab("¿Cómo llevas lo que habéis dado?", "Una respuesta por asignatura: todo lo que ya habéis dado toma ese color, sin ir tema a tema. Después se ajusta solo con lo que hagas en la app.")}
       ${lista.map((a) => `<fieldset class="pila-s" style="border:0;padding:0;margin:0"><legend class="tarea-t" style="margin-bottom:6px">${esc(AS[a].nombre)}</legend>
         <div class="opciones cuatro">${["bien", "regular", "mal", "nada"].map((v) => opcion("cv-" + a, v, COMO_VA_TXT[v], i.comoVa[a], "ini-como")).join("")}</div></fieldset>`).join("")}`;
     listo = lista.every((a) => i.comoVa[a]);
@@ -1137,7 +1137,7 @@ function vInicio() {
     // Sin nada marcado, la app no sabe qué está dado y el plan sale vacío: hace falta al menos una asignatura con algo
     // marcado. Al cambiar asignaturas y tardes, también vale una de las que ya tenían algo marcado.
     listo = [...i.asignaturas].some((a) => algoMarcado(a, i.modelo));
-    cuerpo = `${cab("¿Por dónde vais?", "En cada bloque, toca lo que estáis dando ahora en clase: lo de antes cuenta como dado y entra en tus repasos con el color que dijiste. Marca al menos una asignatura; lo que ahora no sepas, lo puedes marcar más tarde en Temario.")}
+    cuerpo = `${cab("¿Por dónde vais?", "Un toque por bloque: ábrelo, toca el tema que estáis dando ahora y marca «En clase». Lo de antes cuenta como dado, con el color que dijiste: no hace falta ir tema a tema. Para empezar basta con una asignatura; las demás, cuando quieras, en Temario.")}
       <div class="pila">${pasoPorDondeVais()}</div>
       ${listo ? "" : `<p class="detalle" id="falta-marcar">Para hacerte el plan, marca por dónde vais en al menos una asignatura.</p>`}`;
   }
