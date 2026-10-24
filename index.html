@@ -1137,7 +1137,7 @@ function vInicio() {
     // Sin nada marcado, la app no sabe qué está dado y el plan sale vacío: hace falta al menos una asignatura con algo
     // marcado. Al cambiar asignaturas y tardes, también vale una de las que ya tenían algo marcado.
     listo = [...i.asignaturas].some((a) => algoMarcado(a, i.modelo));
-    cuerpo = `${cab("¿Por dónde vais?", "Un toque por bloque: ábrelo, toca el tema que estáis dando ahora y marca «En clase». Lo de antes cuenta como dado, con el color que dijiste: no hace falta ir tema a tema. Para empezar basta con una asignatura; las demás, cuando quieras, en Temario.")}
+    cuerpo = `${cab("¿Por dónde vais?", "Un toque por bloque: ábrelo, toca el tema por el que vais y marca «Hasta aquí lo hemos dado». Lo de antes cuenta como dado, con el color que dijiste: no hace falta ir tema a tema. Para empezar basta con una asignatura; las demás, cuando quieras, en Temario.")}
       <div class="pila">${pasoPorDondeVais()}</div>
       ${listo ? "" : `<p class="detalle" id="falta-marcar">Para hacerte el plan, marca por dónde vais en al menos una asignatura.</p>`}`;
   }
@@ -1807,12 +1807,12 @@ function barraBloque(b, M) {
   return `<span class="barra-temas" role="img" aria-label="${esc("Resumen en colores de " + de + ". " + partes.join(". ") + ".")}">${trozos.join("")}</span>`;
 }
 function idFila(key) { return "fila-" + key.replace(":", "-"); }
-/* Una fila del bloque: el nombre, «En clase ahora» y su estado escrito y en color (o «Aún no dado»). Al tocarla, la hoja. */
+/* Una fila del bloque: el nombre, «Vais por aquí» y su estado escrito y en color (o «Aún no dado»). Al tocarla, la hoja. */
 function filaMapa(key, M) {
   const tm = TEMA[key], e = estadoDe(key, M), v = V(tm.asig);
   const nombre = tm.asig === "historia" ? `<strong>${nHist(tm.id)}</strong> · ${esc(tm.nombre)}` : esc(tm.nombre);
   return `<li><button type="button" class="fila-tema${e ? "" : " nodado"}" id="${idFila(key)}" data-accion="abrir-tema" data-key="${esc(key)}" aria-haspopup="dialog">
-    <span class="izq"><span class="nom">${nombre}</span> ${enClase(key, M) ? '<span class="en-clase">En clase ahora</span>' : ""}</span>
+    <span class="izq"><span class="nom">${nombre}</span> ${enClase(key, M) ? '<span class="en-clase">Vais por aquí</span>' : ""}</span>
     <span class="dcha">${e ? `<span class="estado e-${e}">${esc(ESTADOS[e])}</span>` : `<span class="no-dado">Aún no dad${v.o}</span>`}${FLECHA}</span></button></li>`;
 }
 /* Un bloque: tarjeta desplegable con su nombre, su cabecera, la barra y la lista de temas. */
@@ -1857,7 +1857,7 @@ function ponerAlDiaHoja() {
   for (const k of ["estado", "enClase", "dado"]) if (h[k] === h.base[k]) h[k] = ahora[k];
   h.base = ahora;
 }
-/* Por dónde iría el bloque si se guarda la casilla «Es el tema que estáis dando ahora»: marcarla lo pone aquí;
+/* Por dónde iría el bloque si se guarda la casilla «Hasta aquí lo hemos dado»: marcarla lo pone aquí;
    desmarcarla (cuando era este) pasa al siguiente, o deja el bloque terminado. */
 function vaisPorTras(b, pos, marcada, M) {
   const actual = vaisPorEn(b.asig, b.id, M), eraClase = actual === b.temas[pos];
@@ -1885,14 +1885,15 @@ function calculoHoja(M) {
     cambiaClase: nuevo !== actual, cambiaEstado: final !== sinTocar, hayCambios: nuevo !== actual || final !== sinTocar,
     verOpciones: porClase || (suelto ? h.dado : guardado !== null), opcionNoDado: !porClase && !suelto && guardado !== null };
 }
-/* El texto bajo «Es el tema que estáis dando ahora»: qué pasará al guardar. */
+/* El texto bajo «Hasta aquí lo hemos dado»: qué pasará al guardar. Si los de antes pasan a dados, cómo quitar uno que
+   aún no se ha dado (en clase a veces se salta o se cambia el orden de algún tema). */
 function ayudaClase(c, h) {
   const { b, pos, actual } = c, v = V(c.asig), eraClase = actual === b.temas[pos];
   if (eraClase && h.enClase) return `Es por donde vais ahora. Desmárca${v.lo} cuando ${v.lo} terminéis en clase.`;
   if (eraClase && pos < b.temas.length - 1) return `Al guardar, contará como dad${v.o} y pasaréis ${v.sig}: ${nombreTema(c.asig + ":" + b.temas[pos + 1])}.`;
   if (eraClase) return `Al guardar, contará como dad${v.o} y el bloque quedará terminado en clase.`;
   if (h.enClase && c.vuelven) return `Al guardar, vais por ${v.este} ${v.t}, y ${cuantos(c.vuelven, c.asig)} de después ${c.vuelven === 1 ? "volverá" : "volverán"} a «Aún no dad${v.o}».`;
-  if (h.enClase && c.pasan) return `Al guardar, vais por ${v.este} ${v.t}, y ${v.los} de antes contarán como dad${v.o}s.`;
+  if (h.enClase && c.pasan) return `Al guardar, vais por ${v.este} ${v.t}, y ${v.los} de antes contarán como dad${v.o}s. Si alguno no lo habéis dado, ábrelo después y elige «Aún no dad${v.o} en clase».`;
   if (h.enClase) return `Al guardar, vais por ${v.este} ${v.t}.`;
   if (actual == null) return "Aún no habéis empezado este bloque en clase.";
   if (actual === FIN) return "Ya habéis terminado este bloque en clase.";
@@ -1911,7 +1912,7 @@ function textoClaseGuardada(c, h) {
   const { b, pos } = c, v = V(c.asig);
   if (!h.enClase && pos < b.temas.length - 1) return `Ya ${v.lo} habéis dado. Ahora vais por: ${nombreTema(c.asig + ":" + b.temas[pos + 1])}.`;
   if (!h.enClase) return `Ya ${v.lo} habéis dado: el bloque está terminado en clase.`;
-  let texto = "Ahora vais por aquí en clase.";
+  let texto = "Hasta aquí lo habéis dado.";
   if (c.vuelven) texto += ` ${cap(cuantos(c.vuelven, c.asig))} de después ${c.vuelven === 1 ? "vuelve" : "vuelven"} a «Aún no dad${v.o}».`;
   if (c.pasan) texto += ` ${cap(v.los)} de antes cuentan como dad${v.o}s.`;
   return texto;
@@ -1931,7 +1932,7 @@ function vHoja(M) {
   const casilla = (id, accion, marcada, texto, ayuda) => `<fieldset><legend>En clase</legend><div class="pila-s" style="gap:8px">
       <label class="casilla-grande" for="${id}"><input type="checkbox" id="${id}" data-accion="${accion}" aria-describedby="hoja-ayuda"${marcada ? " checked" : ""}><span>${texto}</span></label>
       <p class="ayuda" id="hoja-ayuda">${esc(ayuda)}</p></div></fieldset>`;
-  const clase = b.vais_por ? casilla("hoja-clase", "hoja-clase", h.enClase, `Es ${v.el} ${v.t} que estáis dando ahora`, ayudaClase(c, h))
+  const clase = b.vais_por ? casilla("hoja-clase", "hoja-clase", h.enClase, "Hasta aquí lo hemos dado", ayudaClase(c, h))
     : c.suelto ? casilla("hoja-dado", "hoja-dado", h.dado, `Ya ${v.lo} habéis dado en clase`, ayudaSuelto(c, h))
     : `<p class="ayuda">Se practica todo el curso: cuenta como dad${v.o} desde el principio.</p>`;
   return `<div class="velo"><div class="hoja" id="hoja" role="dialog" aria-modal="true" aria-labelledby="hoja-titulo" tabindex="-1">
