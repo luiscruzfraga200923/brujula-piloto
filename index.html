@@ -172,6 +172,7 @@ textarea { width: 100%; min-height: 84px; resize: vertical; padding: 10px 12px; 
 .reloj.parado { color: var(--tinta-suave); }
 .centro { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; padding-block: 40px; }
 .dos-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 19em) { .dos-col.apilar { grid-template-columns: 1fr; } } /* con letra grande, «Ahora no» no cabe en media fila */
 
 /* Temario */
 .grupo { background: var(--superficie); border: 1px solid var(--linea); border-radius: var(--r-lg); padding: 4px 16px; }
@@ -435,7 +436,7 @@ const CLAVE = "brujula-0.1";
 
 function hoyNuevo() { return { fecha: hoyISO(), plan: null, hechos: [], ajuste: null, comodin: false, festivo: false }; }
 function progresoNuevo() {
-  return { v: 1, version: 2, creado: hoyISO(), asignaturas: [], ocupadas: [], comoVa: {}, vaisPor: {}, ritmoPreguntar: [],
+  return { v: 1, version: 2, creado: hoyISO(), asignaturas: [], ocupadas: [], comoVa: {}, vaisPor: {}, ritmoPreguntar: [], preguntar: [],
     temas: {}, examenes: [], textos: {}, puntos: {}, fondo: {}, comodines: [], hoy: hoyNuevo(), tiempos: {} };
 }
 /* El ritmo de Historia de antes (ritmo.b1 = 6: vais por la pregunta 6; ritmo.b1 = 11: el bloque 1 terminado) en el formato
@@ -467,6 +468,19 @@ function colorDestrezas(p) {
 }
 /* En la 0.1, «Por reforzar» era una pregunta ya estudiada con fallos: en el semáforo es «Estudiado una vez», no «Sin estudiar». */
 const VIEJO_A_NUEVO = { dominada: "verde", marcha: "amarillo", reforzar: "amarillo" };
+/* Para un progreso de antes del 24/10: los bloques de los que no se sabe nada (sin «vais por» ni temas con color), que
+   aún no estén en la cola. Primero, uno de cada asignatura; luego, los demás (como al terminar el alta). */
+function colaDeAntes(r) {
+  const primeros = [], resto = [];
+  for (const a of r.asignaturas.filter((x) => AS[x])) {
+    const sinSaber = bloquesVaisPor(a)
+      .filter((b) => (r.vaisPor[a] || {})[b.id] === undefined && !b.temas.some((t) => (r.temas[a + ":" + t] || {}).estado))
+      .map((b) => a + ":" + b.id).filter((k) => !r.preguntar.includes(k));
+    primeros.push(...sinSaber.slice(0, 1));
+    resto.push(...sinSaber.slice(1));
+  }
+  return primeros.concat(resto);
+}
 function normaliza(p) {
   const r = Object.assign(progresoNuevo(), p || {});
   // 0.1, antes de separar los bloques: había un solo «vais por la pregunta». Se reparte y se pregunta el otro bloque.
@@ -481,8 +495,15 @@ function normaliza(p) {
   delete r.ritmo;
   if (!r.vaisPor || typeof r.vaisPor !== "object") r.vaisPor = {};
   r.ritmoPreguntar = r.ritmoPreguntar || [];
+  // Desde el 24/10/2026 la cola de «¿Por dónde vais?» es de todas las asignaturas («asignatura:bloque»): lo que quedara
+  // por preguntar de Historia pasa a ella
+  r.preguntar = Array.isArray(r.preguntar) ? r.preguntar.filter((k) => typeof k === "string") : [];
+  for (const id of r.ritmoPreguntar) if (!r.preguntar.includes("historia:" + id)) r.preguntar.push("historia:" + id);
+  r.ritmoPreguntar = [];
   for (const k of ["temas", "textos", "puntos", "fondo", "comoVa", "tiempos"]) r[k] = r[k] || {};
   for (const k of ["asignaturas", "ocupadas", "examenes", "comodines"]) r[k] = Array.isArray(r[k]) ? r[k] : [];
+  // Datos de la 0.2 de antes del 24/10, aún sin cola: lo que no se sabe de ningún bloque se preguntará en Hoy
+  if (p && p.version && !Array.isArray(p.preguntar)) r.preguntar.push(...colaDeAntes(r));
   // 0.1 → 0.2: el estado de cada pregunta de Historia pasa al semáforo de la Brújula; un primer estudio hecho = estudiada una vez.
   if (p && !p.version) {
     for (const n in p.preguntas || {}) {
@@ -701,7 +722,7 @@ function adoptarProg(d) {
   A.selloProg = d.actualizado || 0; A.vProg = d.v || 0;
   const previo = prog;
   prog = normaliza(clon(d));
-  if (!d.vaisPor && !d.ritmo && previo) { prog.vaisPor = clon(previo.vaisPor); prog.ritmoPreguntar = [...previo.ritmoPreguntar]; }
+  if (!d.vaisPor && !d.ritmo && previo) { prog.vaisPor = clon(previo.vaisPor); prog.preguntar = [...previo.preguntar]; }
   if (S.vista === "inicio" && prog.asignaturas.length && S.ini && S.ini.modo !== "ajustes") { S.vista = "hoy"; S.hoja = null; S.mapa.aviso = null; }
   if (S.hoja && S.vista === "asignatura") ponerAlDiaHoja();
   if (["hoy", "temario", "asignatura", "examenes", "semana"].includes(S.vista)) repintarSiCambia();
@@ -778,6 +799,31 @@ function fijarColor(asig, idBloque) {
     if (dadoPorClase(key) && !prog.temas[key]) prog.temas[key] = { estado: color, desde: "arranque" };
   }
 }
+/* ---------- «¿Por dónde vais?», poco a poco (decidido por Luis el 24/10/2026) ----------
+   El alta pregunta por dónde vais en un bloque de cada asignatura (basta con una para tener plan). Los demás bloques se
+   preguntan después en Hoy, de uno en uno: así no hay que marcarlo todo antes de ver para qué sirve. */
+/* Los bloques de una asignatura por los que se puede preguntar «¿Por dónde vais?»: los que van tema a tema (no las
+   destrezas ni las lecturas sueltas). Ejemplo: bloquesVaisPor("lengua") -> los bloques 2 y 4. */
+function bloquesVaisPor(a) { return bloquesDe(a).filter((b) => b.vais_por && !b.destreza); }
+/* El bloque de una clave de la cola («empresa:b2»), o null si ya no existe. */
+function bloquePregunta(clave) { const [a, id] = String(clave).split(":"); return AS[a] ? bloqueDeId(a, id) : null; }
+/* Los bloques que se preguntan en el alta: el primero y, mientras uno esté «Aún no lo habéis empezado», el siguiente
+   (si la clase empezó por el bloque 2, el alumno puede decirlo). Ejemplo: con Lengua b2 = null, [b2, b4]. */
+function bloquesAlta(a, M) {
+  const lista = [];
+  for (const b of bloquesVaisPor(a)) {
+    lista.push(b);
+    if ((M.vaisPor[a] || {})[b.id] !== null) break;  // sin responder, o con un tema o «terminado»: aquí se para
+  }
+  return lista;
+}
+/* La pregunta que toca hoy en Hoy: la primera de la cola de una asignatura del alumno (ninguna si hoy dijo «Ahora no»). */
+function siguientePregunta() {
+  if (prog.hoy.sinPregunta) return null;
+  return prog.preguntar.map(bloquePregunta).find((b) => b && misAsignaturas().includes(b.asig) && vaisPorEn(b.asig, b.id) == null) || null;
+}
+/* Quita un bloque de la cola (ya se sabe por dónde vais). */
+function quitarPregunta(asig, id) { prog.preguntar = prog.preguntar.filter((k) => k !== asig + ":" + id); }
 function dado(key) { return estadoDe(key) !== null; }
 function ultimoDe(key) { return (prog.temas[key] || {}).ultimo || ""; }
 function temasDe(a) { return AS[a].temas.map((t) => a + ":" + t.id); }
@@ -1084,21 +1130,6 @@ function pasosArranque() {
   if (S.ini.modo !== "ajustes" || asigParaMapa().length) pasos.push(4); // fuera de «ajustes», toda asignatura elegida sale en el mapa
   return pasos;
 }
-/* El paso «¿Por dónde vais?»: el mapa de cada asignatura, desplegable (la primera, abierta). */
-function pasoPorDondeVais() {
-  const M = S.ini.modelo, lista = asigParaMapa();
-  if (!(("asig-" + lista[0]) in S.mapa.abiertos)) {
-    S.mapa.abiertos["asig-" + lista[0]] = true;
-    for (const a of lista) abrirBloquesEnClase(a, M);
-  }
-  return lista.map((a) => {
-    const clave = "asig-" + a, v = V(a);
-    const n = temasDe(a).filter((k) => !BLOQUE_DE[k].b.destreza && estadoDe(k, M)).length;
-    return `<details class="mapa-asig" data-bloque="${clave}"${S.mapa.abiertos[clave] ? " open" : ""}><summary id="sum-${clave}">
-      <span class="pila-s" style="gap:2px;flex-grow:1"><span class="subtitulo">${esc(AS[a].nombre)}</span><span class="mapa-detalle">${n ? cuantos(n, a) + " dad" + v.o + (n === 1 ? "" : "s") : "Nada marcado todavía"}</span></span>${GALON}</summary>
-      <div style="padding:4px 0 12px">${mapaAsignatura(a, M)}</div></details>`;
-  }).join("");
-}
 function vInicio() {
   const i = S.ini, pasos = pasosArranque(), k = pasos.indexOf(i.paso) + 1;
   const cab = (titulo, texto) => `
@@ -1137,14 +1168,27 @@ function vInicio() {
     // Sin nada marcado, la app no sabe qué está dado y el plan sale vacío: hace falta al menos una asignatura con algo
     // marcado. Al cambiar asignaturas y tardes, también vale una de las que ya tenían algo marcado.
     listo = [...i.asignaturas].some((a) => algoMarcado(a, i.modelo));
-    cuerpo = `${cab("¿Por dónde vais?", "Un toque por bloque: ábrelo, toca el tema por el que vais y marca «Hasta aquí lo hemos dado». Lo de antes cuenta como dado, con el color que dijiste: no hace falta ir tema a tema. Para empezar basta con una asignatura; las demás, cuando quieras, en Temario.")}
-      <div class="pila">${pasoPorDondeVais()}</div>
-      ${listo ? "" : `<p class="detalle" id="falta-marcar">Para hacerte el plan, marca por dónde vais en al menos una asignatura.</p>`}`;
+    cuerpo = `${cab("¿Por dónde vais?", "Elige, al menos en una asignatura, el tema por el que vais en clase: ese y los de antes contarán como dados, y como dijiste que los llevas. Lo que ahora no sepas, la app te lo preguntará poco a poco cuando la abras.")}
+      <div class="caja" style="gap:16px">${asigParaMapa().map(desplegableAlta).join("")}</div>
+      ${listo ? "" : `<p class="detalle" id="falta-marcar">Para hacerte el plan, elige un tema en al menos una asignatura.</p>`}`;
   }
   const ultimo = k === pasos.length;
   return `${cuerpo}${notaLocal()}
     <button type="button" class="boton principal grande bloque" id="ini-sig" data-accion="ini-sig"${listo ? "" : ` disabled${i.paso === 4 ? ' aria-describedby="falta-marcar"' : ""}`}>${ultimo ? (i.modo === "ajustes" ? "Guardar" : "Ver qué toca hoy") : "Siguiente"}</button>
-    ${i.paso === 4 ? vAvisoGuardado() + (S.hoja ? vHoja(i.modelo) : "") : ""}`;
+`;
+}
+/* En el alta, «¿Por dónde vais?» en el primer bloque de una asignatura: un desplegable que empieza en «Ahora no lo sé»
+   (sin responder: se preguntará después en Hoy). Si ese bloque aún no lo habéis empezado, sale el siguiente. */
+function desplegableAlta(a) {
+  return bloquesAlta(a, S.ini.modelo).map((b, n) => {
+    const v = (S.ini.modelo.vaisPor[a] || {})[b.id], id = n ? "va-" + a + "-" + b.id : "va-" + a;  // undefined = sin responder
+    return `<div class="pila-s">
+      <label class="tarea-t" for="${id}">${n ? "¿Y en el siguiente bloque de " + esc(AS[a].corto) + "?" : esc(AS[a].nombre)}</label>
+      <span class="detalle" id="${id}-bloque">${esc(b.nombre)}</span>
+      <select id="${id}" data-accion="ini-vaispor" data-asig="${a}" data-bloque="${b.id}" aria-describedby="${id}-bloque">
+        <option value="?"${v === undefined ? " selected" : ""}>Ahora no lo sé</option>${opcionesVaisPor(b, v === undefined ? "?" : v)}</select>
+    </div>`;
+  }).join("");
 }
 /* El alias del piloto: nunca el nombre real. Opcional: sin alias, la app funciona igual y no se apunta nada. */
 function campoAlias() {
@@ -1189,7 +1233,10 @@ function terminarArranque() {
   for (const a of enMapa) {
     for (const b of bloquesDe(a)) {
       const v = (i.modelo.vaisPor[a] || {})[b.id];
-      if (!igual(v, (i.base.vaisPor[a] || {})[b.id])) fijarVaisPor(a, b.id, v == null ? null : v);
+      if (igual(v, (i.base.vaisPor[a] || {})[b.id])) continue;
+      if (v !== undefined) { fijarVaisPor(a, b.id, v); continue; }
+      // «Ahora no lo sé» no es «Aún no lo habéis empezado»: sin responder, el bloque no lleva «vais por»
+      const m = Object.assign({}, prog.vaisPor[a]); delete m[b.id]; prog.vaisPor[a] = m;
     }
     for (const key of temasDe(a)) {
       if (igual(i.modelo.temas[key], i.base.temas[key])) continue;
@@ -1198,7 +1245,21 @@ function terminarArranque() {
     }
     fijarColor(a);
   }
-  if (enMapa.includes("historia")) prog.ritmoPreguntar = []; // ya ha visto los dos bloques de Historia
+  // Lo que no se respondió en el alta se preguntará en Hoy, de uno en uno. El bloque del desplegable, si se respondió,
+  // sale de la cola; los demás solo entran si no se sabe nada (los que ya estaban en la cola, se quedan: con datos de la
+  // 0.1, un bloque sin saber puede estar guardado como null)
+  // Primero va, de cada asignatura, el bloque del alta que quedó sin responder (así ninguna se queda días sin plan),
+  // también delante de lo que ya estaba en la cola (al añadir una asignatura); después, los demás
+  const primeros = [], resto = [];
+  for (const a of enMapa) {
+    const vistos = bloquesAlta(a, i.modelo);
+    for (const b of bloquesVaisPor(a)) {
+      const clave = a + ":" + b.id, v = (i.modelo.vaisPor[a] || {})[b.id];
+      if (vistos.includes(b) && v !== undefined) quitarPregunta(a, b.id);
+      else if (v === undefined && !prog.preguntar.includes(clave)) (vistos.includes(b) ? primeros : resto).push(clave);
+    }
+  }
+  prog.preguntar = [...primeros, ...prog.preguntar, ...resto];
   colorDestrezas(prog);
   replanificar(); // con datos nuevos, el plan de hoy se rehace (lo hecho se queda)
   guardarAlias();  // antes de guardar: el cambio de estados del alta ya se apunta con el alias
@@ -1239,13 +1300,17 @@ function vHoy() {
   const examenHoy = examenesVivos().filter((e) => e.fecha === hoy);
   const hechasHtml = hechas.length ? `
     <div class="pila-s"><p class="detalle" style="font-weight:600">Hecho hoy</p><div class="hechas">${hechas.map((t) => `<p class="hecha">${ICONO_OK}${esc(AS[t.asig].corto)} · ${esc(tituloTarea(t))}</p>`).join("")}</div></div>` : "";
-  const falta = misAsignaturas().includes("historia") && prog.ritmoPreguntar.length ? bloqueDeId("historia", prog.ritmoPreguntar[0]) : null;
+  const falta = siguientePregunta();
+  // Lo elegido en el desplegable se guarda en S.falta (así no se pierde si la pantalla se repinta); hasta elegir, no se puede guardar
+  const elegido = falta && S.falta && S.falta.clave === falta.asig + ":" + falta.id ? S.falta.valor : "?";
   const preguntaRitmo = falta ? `
     <div class="caja">
-      <label class="tarea-t" for="sel-falta">¿Por dónde vais en el ${esc(nombreCortoBloque(falta).toLowerCase())} de Historia?</label>
-      <p class="detalle">${cap(rangoHist(falta))}: ${esc(descripcionBloque(falta))}. En clase puede ir a la vez que el otro bloque.</p>
-      <select id="sel-falta">${opcionesVaisPor(falta, null)}</select>
-      <button type="button" class="boton bloque" id="guardar-ritmo" data-accion="guardar-ritmo" data-bloque="${falta.id}">Guardar</button>
+      <label class="tarea-t" for="sel-falta">¿Por dónde vais en ${esc(AS[falta.asig].corto)}?</label>
+      <p class="detalle" id="sel-falta-detalle">${esc(falta.nombre)}${falta.asig === "historia" ? " (" + rangoHist(falta) + "). En clase puede ir a la vez que el otro bloque" : ""}. El tema que elijas y los de antes contarán como dados.</p>
+      <select id="sel-falta" data-accion="sel-falta" data-clave="${falta.asig}:${falta.id}" aria-describedby="sel-falta-detalle">
+        <option value="?"${elegido === "?" ? " selected" : ""}>Elige por dónde vais</option>${opcionesVaisPor(falta, elegido === "?" ? "?" : leerVaisPor(elegido))}</select>
+      <div class="dos-col apilar"><button type="button" class="boton principal" id="guardar-ritmo" data-accion="guardar-ritmo" data-asig="${falta.asig}" data-bloque="${falta.id}"${elegido === "?" ? " disabled" : ""}>Guardar</button>
+        <button type="button" class="boton" id="pregunta-luego" data-accion="pregunta-luego" data-asig="${falta.asig}" data-bloque="${falta.id}">Ahora no</button></div>
     </div>` : "";
   const sinExamenes = !futuros.length ? `
     <div class="caja"><p class="tarea-t">¿Tienes exámenes con fecha?</p><p class="detalle">Añádelos: con las fechas, la app reparte el estudio para que llegues sin agobios.</p>
@@ -1959,7 +2024,7 @@ function guardarHoja() {
     titulo = "Guardado: " + nombre + ", ahora «" + (c.final ? ESTADOS[c.final] : "Aún no dad" + V(c.asig).o) + "».";
   }
   if (M === prog) {
-    if (c.cambiaClase && c.asig === "historia") prog.ritmoPreguntar = prog.ritmoPreguntar.filter((x) => x !== c.b.id);
+    if (c.cambiaClase) quitarPregunta(c.asig, c.b.id);
     cambioDeFuera(); // el plan de hoy se rehace con lo nuevo (lo hecho se queda)
   }
   S.mapa.aviso = { titulo, detalle, key: h.key };
@@ -2315,11 +2380,29 @@ document.addEventListener("click", (ev) => {
   if (acc === "ajustes") { iniciarArranque("ajustes"); return pintar(true); }
   /* hoy */
   if (acc === "guardar-ritmo") {
-    const id = b.dataset.bloque;
-    fijarVaisPor("historia", id, leerVaisPor(document.getElementById("sel-falta").value));
-    prog.ritmoPreguntar = prog.ritmoPreguntar.filter((x) => x !== id);
-    fijarColor("historia", id); // ese bloque ya se había dado antes de que la app lo supiera
-    cambioDeFuera(); return pintar(true);
+    const a = b.dataset.asig, id = b.dataset.bloque, valor = document.getElementById("sel-falta").value;
+    if (valor === "?") return;  // aún no ha elegido (el botón está desactivado)
+    S.falta = null;
+    fijarVaisPor(a, id, leerVaisPor(valor));
+    quitarPregunta(a, id);
+    fijarColor(a, id); // ese bloque ya se había dado antes de que la app lo supiera
+    cambioDeFuera();
+    // Si queda otra pregunta, el foco va a ella (para seguir de un tirón); si no, al título
+    pintar(true);
+    const sig = document.getElementById("sel-falta"); if (sig) sig.focus();
+    anunciar(sig ? "Guardado. Siguiente pregunta." : "Guardado.");
+    return;
+  }
+  if (acc === "pregunta-luego") {
+    // «Ahora no»: hoy ya no se pregunta más; mañana, la siguiente (esta pasa al final de la cola)
+    const clave = b.dataset.asig + ":" + b.dataset.bloque;
+    normalizaDia();  // si la app seguía abierta desde ayer, el «hoy» que vale es el de hoy
+    S.falta = null;
+    prog.preguntar = prog.preguntar.filter((k) => k !== clave).concat([clave]);
+    prog.hoy.sinPregunta = true;
+    guardarProg(); pintar(true);
+    anunciar("Vale. Te lo preguntaremos otro día.");
+    return;
   }
   if (acc === "tarea") {
     // Si ha cambiado el día con la pantalla abierta, primero se repinta con el plan de hoy.
@@ -2454,7 +2537,24 @@ document.addEventListener("change", (ev) => {
   /* arranque */
   if (acc === "ini-asig") { S.ini.asignaturas[el.checked ? "add" : "delete"](el.value); return repintar(el); }
   if (acc === "ini-dia") { S.ini.ocupadas[el.checked ? "add" : "delete"](Number(el.value)); return repintar(el); }
+  if (acc === "ini-vaispor") {
+    const a = el.dataset.asig, id = el.dataset.bloque;
+    const antes = bloquesAlta(a, S.ini.modelo).length;
+    if (el.value === "?") { const m = Object.assign({}, S.ini.modelo.vaisPor[a]); delete m[id]; S.ini.modelo.vaisPor[a] = m; }  // sin responder
+    else fijarVaisPor(a, id, leerVaisPor(el.value), S.ini.modelo);
+    const vistos = bloquesAlta(a, S.ini.modelo);
+    for (const b of bloquesVaisPor(a)) {
+      if (vistos.includes(b)) continue;
+      const m = Object.assign({}, S.ini.modelo.vaisPor[a]), base = (S.ini.base.vaisPor[a] || {})[b.id];
+      if (base === undefined) delete m[b.id]; else m[b.id] = base;
+      S.ini.modelo.vaisPor[a] = m;
+    }
+    repintar(el);
+    if (vistos.length > antes) anunciar("Debajo sale el siguiente bloque de " + AS[a].corto + ".");
+    return;
+  }
   if (acc === "ini-como") { S.ini.comoVa[el.name.slice(3)] = el.value; return repintar(el); }
+  if (acc === "sel-falta") { S.falta = { clave: el.dataset.clave, valor: el.value }; return repintar(el); }
   /* sesión */
   if (acc === "trozo") {
     const ses = S.ses, i = Number(el.dataset.i), k = ses.marcados.indexOf(i);
