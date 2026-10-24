@@ -1148,7 +1148,7 @@ function vInicio() {
       i.modo === "migrar" ? `<div class="caja"><p class="tarea-t">Novedad: ahora organiza todas tus asignaturas</p><p class="detalle">Tu plan ya no sale solo del temario de Historia: tiene en cuenta tus exámenes, cómo llevas cada tema y el tiempo que tienes cada día. Lo que llevas hecho se queda.</p></div>` : "";
     cuerpo = `${intro}${cab("Tus asignaturas", "Las que tienes en 2.º de Bachillerato. El temario es el oficial de la CiUG.")}
       <div class="caja" style="gap:0;padding-block:4px">${ASIG.map((a) => `<label class="chk" for="as-${a.id}"><input type="checkbox" id="as-${a.id}" data-accion="ini-asig" value="${a.id}"${i.asignaturas.has(a.id) ? " checked" : ""}><span>${esc(a.nombre)}</span></label>`).join("")}</div>
-      <p class="detalle">De momento están estas nueve. Las demás llegarán más adelante.</p>
+      <p class="detalle" id="otras-asig">De momento están estas nueve. Si tienes TIC u otra que no sale aquí, marca las demás: esa aún no está en la app.</p>
       ${registroActivo() ? campoAlias() : ""}`;
     listo = i.asignaturas.size > 0 && (!registroActivo() || avisoAlias(i.alias).vale);
   } else if (i.paso === 2) {
