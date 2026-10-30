@@ -238,7 +238,8 @@ details[open] > summary .galon { transform: rotate(180deg); }
 .en-clase { font-size: 0.875rem; line-height: 1.125rem; font-weight: 600; padding: 3px 8px; border-radius: var(--r-sm); background: var(--rumbo); color: var(--sobre-rumbo); }
 .estado { flex: none; font-size: 0.875rem; line-height: 1.125rem; font-weight: 600; white-space: nowrap; padding: 4px 8px; border-radius: var(--r-sm); border: 1px solid; }
 .no-dado { flex: none; font-size: 0.875rem; line-height: 1.125rem; white-space: nowrap; color: var(--tinta-suave); }
-.tema-ex .estado, .tema-ex .no-dado { white-space: normal; } /* en «Nuevo examen» van debajo del nombre: pueden bajar de línea */
+.tema-ex .estado, .tema-ex .no-dado { white-space: normal; }
+.ciug-tema { font-size: 0.875rem; line-height: 1.25rem; color: var(--tinta-suave); } /* lo que pide la CiUG, en «¿Qué habéis dado?» */ /* en «Nuevo examen» van debajo del nombre: pueden bajar de línea */
 /* Los cuatro estados del semáforo: fondo, texto y un borde del mismo tono (contraste de 3:1 o más) */
 .e-rojo { background: var(--aviso-suave); color: var(--aviso-fuerte); border-color: var(--aviso); }
 .e-amarillo { background: var(--marca); color: var(--tinta); border-color: var(--marca-linea); }
@@ -1197,7 +1198,7 @@ function vInicio() {
     const final = i.n === lista.length - 1;
     listo = !final || [...i.asignaturas].some((x) => algoMarcado(x, i.modelo));
     const extra = lista.length > 1 ? ` · ${esc(AS[a].corto)}, ${i.n + 1} de ${lista.length}` : "";
-    cuerpo = `${cab("¿Qué habéis dado en " + esc(AS[a].corto) + "?", `Marca ${v.los} ${v.ts} que ya habéis dado en clase, en el orden que sea. Lo que no marques no entra en tu plan: podrás marcarlo después en Temario.`, extra)}
+    cuerpo = `${cab("¿Qué habéis dado en " + esc(AS[a].corto) + "?", `Marca ${v.los} ${v.ts} que ya habéis dado en clase, en el orden que sea${a === "historia" ? "" : ` (debajo de cada uno, lo que pide la CiUG, para compararlo con tus apuntes)`}. Lo que no marques no entra en tu plan: podrás marcarlo después en Temario.`, extra)}
       ${cajaClaseAlta(a)}
       <div class="pila">${bloquesDe(a).map(bloqueDado).join("")}</div>
       ${listo ? "" : `<p class="detalle" id="falta-marcar">Para hacerte el plan, ${i.asignaturas.size === 1 ? `marca al menos un${v.o === "a" ? "a" : ""} ${v.t}` : "marca al menos un tema en alguna de tus asignaturas"}.</p>`}`;
@@ -1252,7 +1253,9 @@ function bloqueDado(b) {
   const temas = b.temas.map((id) => {
     const key = b.asig + ":" + id, tm = TEMA[key], idc = "dt-" + b.asig + "-" + id;
     const nombre = b.asig === "historia" ? `<strong>${nHist(id)}</strong> · ${esc(tm.nombre)}` : esc(tm.nombre);
-    return `<li><label class="tema-ex" for="${idc}"><input type="checkbox" id="${idc}" data-accion="ini-dado" data-key="${esc(key)}"${dadoEnClase(key, M) ? " checked" : ""}><span>${nombre}</span></label></li>`;
+    // Debajo, lo que pide la CiUG (en gallego, como lo escribe), para compararlo con los apuntes (Luis, 30/10/2026)
+    const ciug = tm.texto ? `<span class="ciug-tema" lang="gl">${esc(tm.texto)}</span>` : "";
+    return `<li><label class="tema-ex" for="${idc}"><input type="checkbox" id="${idc}" data-accion="ini-dado" data-key="${esc(key)}"${dadoEnClase(key, M) ? " checked" : ""}><span class="pila-s" style="gap:4px;align-items:flex-start;min-width:0"><span>${nombre}</span>${ciug}</span></label></li>`;
   }).join("");
   return `<div class="bloque-ex${marcados ? " entra" : ""}" role="group" aria-labelledby="dab-${clave.replace(":", "-")}">
     <div class="cab-ex"><div class="fila" style="flex-wrap:nowrap;align-items:flex-start;gap:10px">
