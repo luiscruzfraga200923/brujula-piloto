@@ -1201,8 +1201,13 @@ function vInicio() {
     if (!final) siguiente = "Siguiente: " + esc(AS[lista[i.n + 1]].corto);
   }
   const ultimo = k === pasos.length && !siguiente;
+  // En «¿Qué habéis dado?», en cuanto hay algo marcado, se puede terminar sin pasar por las demás asignaturas: lo que
+  // falte se marca cuando se quiera en Temario (decidido por Luis el 30/10/2026: el alta entera era demasiado larga)
+  const terminarYa = i.paso === 4 && siguiente && [...i.asignaturas].some((x) => algoMarcado(x, i.modelo));
   return `${cuerpo}${notaLocal()}
     <button type="button" class="boton principal grande bloque" id="ini-sig" data-accion="ini-sig"${listo ? "" : ` disabled${i.paso === 4 ? ' aria-describedby="falta-marcar"' : ""}`}>${siguiente || (ultimo ? (i.modo === "ajustes" ? "Guardar" : "Ver qué toca hoy") : "Siguiente")}</button>
+    ${terminarYa ? `<button type="button" class="boton bloque" id="ini-terminar" data-accion="ini-terminar" aria-describedby="terminar-ayuda">${i.modo === "ajustes" ? "Guardar ya" : "Terminar y ver qué toca hoy"}</button>
+    <p class="detalle" id="terminar-ayuda">Lo que no marques ahora, márcalo cuando quieras en Temario.</p>` : ""}
 `;
 }
 /* Los bloques que salen abiertos al llegar a una asignatura en «¿Qué habéis dado?»: los primeros, hasta tener al menos
@@ -1383,7 +1388,16 @@ function vHoy() {
     <button type="button" class="icono-btn" data-accion="ir" data-vista="semana" aria-label="Ver tu semana">${ICONO_SEMANA}</button></div>
   ${notaLocal()}${errorGuardado()}
   ${relojAviso()}
-  ${cuerpo}`;
+  ${cuerpo}
+  ${avisoSinMarcar()}`;
+}
+/* Abajo en Hoy, las asignaturas que aún no tienen nada marcado como dado: hasta que se marque en Temario, no entran en
+   el plan (pasa si se terminó el alta antes de llegar a ellas). Sin ninguna, no sale nada. */
+function avisoSinMarcar() {
+  const sin = misAsignaturas().filter((a) => !algoMarcado(a, prog));
+  if (!sin.length) return "";
+  return `<div class="caja"><p class="detalle" id="sin-marcar">Sin marcar lo dado: ${esc(lista(sin.map((a) => AS[a].corto)))}. Hasta que lo marques en Temario, no ${sin.length === 1 ? "entra" : "entran"} en tu plan.</p>
+    <button type="button" class="boton bloque" id="ir-marcar" data-accion="ir" data-vista="temario" aria-describedby="sin-marcar">Marcar en Temario</button></div>`;
 }
 
 /* ---------- Tu semana ---------- */
@@ -2404,6 +2418,7 @@ document.addEventListener("click", (ev) => {
     if (k === pasos.length - 1) return terminarArranque();
     S.ini.paso = pasos[k + 1]; S.ini.n = 0; return pintar(true);
   }
+  if (acc === "ini-terminar") { S.hoja = null; S.mapa.aviso = null; return terminarArranque(); }  // sin pasar por las demás asignaturas
   if (acc === "ini-atras") {
     const pasos = pasosArranque(), k = pasos.indexOf(S.ini.paso);
     S.hoja = null; S.mapa.aviso = null;
