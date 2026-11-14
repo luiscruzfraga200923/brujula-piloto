@@ -571,13 +571,77 @@ function quitarVocabularioViejo(r) {
 function almacenFunciona() {
   try { localStorage.setItem("brujula-prueba", "1"); const ok = localStorage.getItem("brujula-prueba") === "1"; localStorage.removeItem("brujula-prueba"); return ok; } catch (e) { return false; }
 }
-function leerLocal() { try { const s = localStorage.getItem(CLAVE); return s ? JSON.parse(s) : null; } catch (e) { return null; } }
+/* El texto tal cual guardado en el navegador (o null si no hay, o si el navegador no deja leer). */
+function leerTextoLocal() { try { return localStorage.getItem(CLAVE); } catch (e) { return null; } }
+function leerLocal() { try { const s = leerTextoLocal(); return s ? JSON.parse(s) : null; } catch (e) { return null; } }
 function escribirLocal(extra) {
   try {
     const actual = leerLocal() || {};
     const nuevo = Object.assign(actual, { prog, reloj }, extra || {});
-    localStorage.setItem(CLAVE, JSON.stringify(nuevo));
+    const texto = JSON.stringify(nuevo);
+    localStorage.setItem(CLAVE, texto);
+    A.leido = texto;  // lo último que esta pestaña sabe que hay guardado (ver refrescarLocal)
   } catch (e) { /* sin almacenamiento: solo en memoria */ }
+}
+/* ---------- borrador: lo que está a medias (solo cuando se guarda en el navegador) ----------
+   Solo en modo «local» (A.modo): la web del piloto, el archivo abierto con doble clic o claude.ai sin base de datos.
+   El alta a medias (ini) y el texto con errores a medias (ses) se guardan en el navegador en cada toque, para que una
+   recarga, el gesto «atrás» del móvil o que el móvil cierre la pestaña no los borren. Van en su propia clave: no son
+   progreso del alumno, y desaparecen solos al terminar. Forma: { ini: { paso, n, abiertos, asignaturas, ocupadas,
+   comoVa, alias, temas, claseTodas, cuando }, ses: { texto, tarea, paso, marcados, resp, auto, inicio, aviso, fecha } }. */
+const CLAVE_BORRADOR = "brujula-borrador";
+// Lo último que esta pestaña escribió (sin la hora): así no se reescribe si no ha cambiado nada. Empieza en «nada a
+// medias» ("{}"): una pestaña que nunca ha tenido nada a medias no escribe ni borra el borrador de otra pestaña.
+let ultimoBorrador = "{}";
+// Qué partes del borrador son de esta pestaña (las ha escrito o recuperado ella). Las que no, son de otra pestaña y
+// se conservan al escribir (ver guardarBorrador).
+let partesPropias = { ini: false, ses: false };
+/* Apunta que esta pestaña ha recuperado una parte del borrador («ini» o «ses»): ahora es suya, y el siguiente toque la
+   vuelve a escribir (o la borra, si ya no está a medias) aunque no haya cambiado nada. */
+function borradorRecuperado(parte) {
+  partesPropias[parte] = true;
+  ultimoBorrador = "";
+}
+/* Lee el borrador guardado. Si no hay, o está roto, devuelve {}. */
+function leerBorrador() {
+  try {
+    const b = JSON.parse(localStorage.getItem(CLAVE_BORRADOR) || "{}");
+    return b && typeof b === "object" ? b : {};
+  } catch (e) { return {}; }
+}
+/* Escribe el borrador. Si no queda nada a medias, borra la clave. */
+function escribirBorrador(b) {
+  try {
+    if (!b.ini && !b.ses) localStorage.removeItem(CLAVE_BORRADOR);
+    else localStorage.setItem(CLAVE_BORRADOR, JSON.stringify(b));
+  } catch (e) { /* sin almacenamiento: se queda solo en memoria, como antes */ }
+}
+/* Guarda en el borrador lo que el alumno tiene a medias ahora mismo. Del alta, solo la de un alumno nuevo: cambiar
+   asignaturas y tardes («ajustes») es corto y ya tiene su progreso guardado. Del texto con errores, solo si es una tarea
+   del plan de hoy y no está a la vista el aviso «La pregunta N sale de tu plan» (eso no se recupera). Un alta sin
+   empezar (paso 1, sin asignaturas ni alias) no cuenta como a medias. Se llama después de cada toque.
+   Con dos pestañas abiertas, cada una escribe solo su parte: si esta no tiene un alta (o un texto) a medias y nunca lo
+   tuvo, el que haya guardado es de la otra pestaña y se conserva. */
+function guardarBorrador() {
+  if (A.modo !== "local") return;
+  const b = {}, i = S.ini;
+  const altaEmpezada = i && (i.paso > 1 || i.asignaturas.size > 0 || !!i.alias);
+  if (S.vista === "inicio" && i && i.modo === "nuevo" && altaEmpezada) {
+    b.ini = { paso: i.paso, n: i.n, abiertos: i.abiertos, asignaturas: [...i.asignaturas], ocupadas: [...i.ocupadas],
+      comoVa: i.comoVa, alias: i.alias, temas: i.modelo.temas, claseTodas: i.claseTodas };
+  }
+  if (S.vista === "sesion" && S.ses && S.ses.tarea && !S.avisoNoDado) b.ses = Object.assign(clon(S.ses), { fecha: hoyISO() });
+  const firma = JSON.stringify(b);
+  if (firma === ultimoBorrador) return;
+  ultimoBorrador = firma;
+  if (b.ini) b.ini.cuando = Date.now();  // para descartarlo si pasa una semana
+  const propias = { ini: !!b.ini, ses: !!b.ses };
+  const guardado = leerBorrador();
+  for (const parte of ["ini", "ses"]) {
+    if (!b[parte] && !partesPropias[parte] && guardado[parte]) b[parte] = guardado[parte];  // de otra pestaña: se queda
+  }
+  partesPropias = propias;
+  escribirBorrador(b);
 }
 const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 function conReintento(fn) { return fn().catch((e) => (e && e.code === "unavailable" ? esperar(600 + Math.random() * 900).then(fn) : Promise.reject(e))); }
@@ -732,15 +796,29 @@ async function arrancar() {
     A.sinAlmacen = !almacenFunciona();
     // En el móvil, se pide al navegador que no borre lo guardado (en el ordenador, Firefox lo preguntaría con un aviso)
     if (!enClaude() && navigator.storage && navigator.storage.persist && matchMedia("(pointer: coarse)").matches) navigator.storage.persist().catch(() => {});
+    A.leido = leerTextoLocal();
     const l = leerLocal();
     prog = l && l.prog ? normaliza(l.prog) : null;
     reloj = l && l.reloj && l.reloj.activo ? l.reloj : null;
+    // Las versiones de lo leído, para saber luego si lo que guarde otra pestaña es más nuevo (esPosterior)
+    A.selloProg = prog ? prog.actualizado || 0 : 0;
+    A.vProg = prog ? prog.v || 0 : 0;
+    A.selloReloj = reloj ? reloj.actualizado || 0 : 0;
+    A.vReloj = reloj ? reloj.v || 0 : 0;
   }
   migrarReloj();
   if (A.subirLocal) { A.subirLocal = false; guardarProg(); A.cola = A.cola.then(() => { if (A.modo === "db") escribirLocal({ soloLocal: false }); }); }
-  if (!prog || !prog.asignaturas.length) iniciarArranque(prog ? "migrar" : "nuevo");
-  else if (reloj && reloj.estado === "fin") { S.fin = finDesdeReloj(); S.vista = "fin"; }
-  else S.vista = "hoy";
+  const borrador = A.modo === "local" ? leerBorrador() : {};
+  if (!prog || !prog.asignaturas.length) {
+    iniciarArranque(prog ? "migrar" : "nuevo");
+    if (!prog && borrador.ini) recuperarAlta(borrador.ini);  // un alta a medias: sigue donde la dejó
+  } else if (reloj && reloj.estado === "fin") { S.fin = finDesdeReloj(); S.vista = "fin"; }
+  else {
+    S.vista = "hoy";
+    // Un alta a medias que sobró (el alta ya se terminó): se borra, sin tocar el texto a medias
+    if (borrador.ini) escribirBorrador({ ses: borrador.ses });
+    if (A.modo === "local" && !reloj && borrador.ses) recuperarSesion(borrador.ses);  // un texto a medias de hoy: sigue en él
+  }
   A.firmaEstados = firmaEstados();
   pintar();
   apuntarApertura();
@@ -766,17 +844,60 @@ function adoptarProg(d) {
   const previo = prog;
   prog = normaliza(clon(d));
   if (!d.vaisPor && !d.ritmo && previo) prog.vaisPor = clon(previo.vaisPor);  // (desde el 25/10/2026, siempre vacío)
-  if (S.vista === "inicio" && prog.asignaturas.length && S.ini && S.ini.modo !== "ajustes") { S.vista = "hoy"; S.hoja = null; S.mapa.aviso = null; }
+  if (S.vista === "inicio" && prog.asignaturas.length && S.ini && S.ini.modo !== "ajustes") { S.vista = "hoy"; S.hoja = null; S.mapa.aviso = null; S.ini = null; }
   if (S.hoja && S.vista === "asignatura") ponerAlDiaHoja();
   if (["hoy", "temario", "asignatura", "examenes", "semana"].includes(S.vista)) repintarSiCambia();
+  A.firmaEstados = firmaEstados();  // lo que llega de fuera no es un cambio del alumno aquí: no se apunta en el registro
 }
 function adoptarReloj(d) {
   if (!d || !esPosterior(d, A.vReloj, A.selloReloj)) return;
   A.selloReloj = d.actualizado || 0; A.vReloj = d.v || 0;
   reloj = d.activo ? clon(d) : null;
+  ponerAlDiaReloj();
+}
+/* Pone al día la pantalla cuando el reloj ha cambiado en otro sitio (otro dispositivo u otra pestaña): avisa si se
+   quedó olvidado, repinta Hoy o el reloj, y si el reloj ya no existe, sale de su pantalla. */
+function ponerAlDiaReloj() {
   if (S.vista === "reloj" && reloj && olvidado() && !document.querySelector(".aviso")) avisarOlvido();
   else if (S.vista === "hoy" || (S.vista === "reloj" && reloj)) repintarSiCambia();
   else if (S.vista === "reloj" && !reloj) ir("hoy");
+}
+/* En modo «local» (todo se guarda en el navegador), otra pestaña de la app puede haber guardado algo. Como así todo se
+   guarda al momento, lo del navegador es siempre lo más nuevo: si ha cambiado desde la última vez que esta pestaña lo
+   leyó o lo escribió, se adopta (así una pestaña vieja no pisa lo de la otra). Devuelve true si ha adoptado algo. */
+function refrescarLocal() {
+  if (A.modo !== "local" || A.sinAlmacen) return false;
+  const texto = leerTextoLocal();
+  if (texto === null || texto === A.leido) return false;
+  A.leido = texto;
+  let l = null;
+  try { l = JSON.parse(texto); } catch (e) { return false; }
+  if (!l || typeof l !== "object") return false;
+  let adoptado = false;
+  if (l.prog && esPosterior(l.prog, A.vProg, A.selloProg)) { adoptarProg(l.prog); adoptado = true; }
+  const r = l.reloj && l.reloj.activo ? l.reloj : null;
+  if (JSON.stringify(r) !== JSON.stringify(reloj)) {
+    reloj = r ? clon(r) : null;
+    if (r) { A.selloReloj = r.actualizado || 0; A.vReloj = Math.max(A.vReloj, r.v || 0); }
+    ponerAlDiaReloj();
+    adoptado = true;
+  }
+  return adoptado;
+}
+/* Lo mismo, y además deja la pantalla al día: si lo que enseñaba ya no existe (el texto que hacía ya se hizo en la otra
+   pestaña, el examen que editaba ya no está) vuelve a Hoy; si no, la repinta solo si lo que llegó la cambia (así no se
+   pierde lo elegido y aún no guardado, como los minutos de «¿Cuánto puedes hoy?»). Se usa antes de cada toque: si
+   devuelve true, ese toque se descarta, porque el alumno lo dio sobre la pantalla vieja (salvo el de una casilla que
+   sigue en pantalla: ver el oyente de «change»). Con descartaToque (lo llaman
+   «click» y «change»), además se le dice al lector de pantalla por qué su toque no ha hecho nada (nada visible). */
+function alDiaConOtraPestana(descartaToque) {
+  if (!refrescarLocal()) return false;
+  const sesionHecha = S.vista === "sesion" && S.ses && S.ses.tarea && prog && prog.hoy.hechos.includes(S.ses.tarea);
+  const examenBorrado = S.vista === "examen" && S.ex && S.ex.id && prog && !prog.examenes.some((e) => e.id === S.ex.id);
+  if (sesionHecha || examenBorrado) { S.ses = null; S.ex = null; ir("hoy"); }
+  else repintarSiCambia();
+  if (descartaToque) anunciar("Pantalla puesta al día con lo que hiciste en otra pestaña.");
+  return true;
 }
 function escuchar(otraVez) {
   A.refProg.onSnapshot((snap) => { if (snap.exists && !snap.metadata.hasPendingWrites) adoptarProg(snap.data()); },
@@ -784,7 +905,7 @@ function escuchar(otraVez) {
   A.refReloj.onSnapshot((snap) => { if (snap.exists && !snap.metadata.hasPendingWrites) adoptarReloj(snap.data()); }, () => {});
 }
 async function refrescar() {
-  if (A.modo !== "db") return;
+  if (A.modo !== "db") { alDiaConOtraPestana(); return; }
   try {
     await A.cola; await A.colaReloj; // primero, que termine lo que esta pestaña está guardando
     const [p, r] = await Promise.all([A.refProg.get(), A.refReloj.get()]);
@@ -1134,13 +1255,54 @@ function iniciarArranque(modo) {
   const p = prog || progresoNuevo();
   // n: en el paso 4, qué asignatura se está marcando (una por pantalla); abiertos: qué bloques se han desplegado
   S.ini = { modo, paso: 1, n: 0, abiertos: {}, asignaturas: new Set(p.asignaturas.length ? p.asignaturas : modo === "migrar" ? ["historia"] : []),
-    ocupadas: new Set(p.ocupadas), comoVa: Object.assign({}, p.comoVa) };
+    ocupadas: new Set(p.ocupadas), comoVa: Object.assign({}, p.comoVa), claseTodas: 0 };
+  // claseTodas: 0 si aún no se ha usado «Marcar lo que lleva la clase»; si no, en cuántas asignaturas marcó (la primera
+  // vez puede marcar todas a la vez: entonces es más de 1, y la pantalla lo dice)
   // Lo que se marca en el alta va a un borrador, y nada pasa al progreso hasta el último paso. Un tema recién marcado
   // queda como { alta: true }: al terminar recibe el color de «¿Cómo llevas…?» (que aún se puede cambiar volviendo atrás).
   S.ini.modelo = { vaisPor: {}, temas: clon(p.temas) };
   S.ini.base = { vaisPor: {}, temas: clon(p.temas) }; // cómo estaba al entrar: para no pisar lo que llegue de otro dispositivo
   S.mapa.abiertos = {};
   S.vista = "inicio";
+}
+/* Vuelve a poner el alta donde la dejó el alumno (desde el borrador del navegador), tras iniciarArranque("nuevo").
+   El borrador puede ser de otra versión de la app o estar roto: se comprueba todo lo que se lee, y si algo falla, el
+   alta empieza de cero. Si tiene más de 7 días, se descarta. Ejemplo: recuperarAlta({ paso: 2, asignaturas: ["historia"], … }). */
+function recuperarAlta(d) {
+  try {
+    // «!(… <= 7 días)» y no «> 7 días»: así un «cuando» que falta o no es un número (NaN) también se descarta
+    if (!d || typeof d !== "object" || !(Date.now() - d.cuando <= 7 * 86400000)) throw new Error("viejo");
+    const i = S.ini;
+    const asig = Array.isArray(d.asignaturas) ? d.asignaturas.filter((a) => typeof a === "string" && AS[a]) : [];
+    i.asignaturas = new Set(asig);
+    i.ocupadas = new Set((Array.isArray(d.ocupadas) ? d.ocupadas : []).filter((w) => Number.isInteger(w) && w >= 0 && w <= 6));
+    const comoVa = objetoOVacio(d.comoVa);
+    i.comoVa = {};
+    for (const a of i.asignaturas) if (["bien", "regular", "mal", "nada"].includes(comoVa[a])) i.comoVa[a] = comoVa[a];
+    // Los temas marcados: en un alta nueva, todos son { alta: true } (los de destreza no se marcan: cuentan solos)
+    for (const k of Object.keys(objetoOVacio(d.temas))) if (TEMA[k] && i.asignaturas.has(TEMA[k].asig) && !BLOQUE_DE[k].b.destreza) i.modelo.temas[k] = { alta: true };
+    if (typeof d.alias === "string") i.alias = d.alias.slice(0, 20);
+    const abiertos = objetoOVacio(d.abiertos);
+    for (const k of Object.keys(abiertos)) if (typeof abiertos[k] === "boolean") i.abiertos[k] = abiertos[k];
+    // Un entero de 0 a 9 (un borrador de antes del 12/11/2026 traía true: cuenta como usado en una)
+    i.claseTodas = Number.isInteger(d.claseTodas) && d.claseTodas >= 0 && d.claseTodas <= 9 ? d.claseTodas : d.claseTodas === true ? 1 : 0;
+    i.paso = pasoRecuperado(d.paso, i);
+    i.n = i.paso === 4 && Number.isInteger(d.n) && d.n >= 0 && d.n < asigParaMapa().length ? d.n : 0;
+  } catch (e) {
+    iniciarArranque("nuevo");  // un borrador roto nunca deja la app sin arrancar: el alta empieza de cero
+  }
+  borradorRecuperado("ini");  // recuperado o roto, ahora es de esta pestaña: el siguiente toque lo reescribe o lo borra
+}
+/* x si es un objeto (no una lista); si no, {}. Para leer sin miedo las partes del borrador del alta.
+   Ejemplo: objetoOVacio({ a: 1 }) -> { a: 1 }; objetoOVacio("x") -> {}. */
+function objetoOVacio(x) { return x && typeof x === "object" && !Array.isArray(x) ? x : {}; }
+/* El paso del alta en que se sigue (paso: el del borrador; i: el alta ya recuperada). Del 1 al 4; sin asignaturas, el 1;
+   sin todos los «¿Cómo la llevas?», como mucho el 3 (sin ellos no se puede seguir). Ejemplo: 4 sin «cómo» -> 3. */
+function pasoRecuperado(paso, i) {
+  let p = Number.isInteger(paso) && paso >= 1 && paso <= 4 ? paso : 1;
+  if (!i.asignaturas.size) p = 1;
+  if (p >= 3 && [...i.asignaturas].some((a) => !i.comoVa[a])) p = 3;
+  return p;
 }
 /* ¿Tiene ya algo dado esta asignatura? Algún tema marcado fuera de las destrezas (esas cuentan solas). */
 function algoMarcado(a, p) { return temasDe(a).some((k) => !BLOQUE_DE[k].b.destreza && dadoEnClase(k, p)); }
@@ -1230,16 +1392,37 @@ function abiertosAlta(a) {
 function temasClase(a) { return (CLASE.asignaturas[a] || []).map((id) => a + ":" + id).filter((k) => BLOQUE_DE[k] && !BLOQUE_DE[k].b.destreza); }
 /* «según Luis, a 30/10»: de quién y de cuándo es la lista. */
 function segunClase() { return "según " + CLASE.quien + (CLASE.fecha ? ", a " + Number(CLASE.fecha.slice(8, 10)) + "/" + Number(CLASE.fecha.slice(5, 7)) : ""); }
+/* Las asignaturas del paso «¿Qué habéis dado?» en las que «Marcar lo que lleva la clase» actúa de una vez, o null si
+   solo actúa en la de la pantalla. La primera vez que se pulsa, y mientras no haya nada marcado a mano, marca todas las
+   que tienen lista de la clase (así el alta no obliga a pasar por una pantalla por asignatura); después, si el alumno
+   ya marcó algo a mano en alguna (eso no se toca sin que lo vea), o si solo hay una con lista, solo la de la pantalla. */
+function claseEnTodas() {
+  const conClase = asigParaMapa().filter((x) => temasClase(x).length > 0);
+  const nadaMarcado = !asigParaMapa().some((x) => algoMarcado(x, S.ini.modelo));
+  return !S.ini.claseTodas && conClase.length > 1 && nadaMarcado ? conClase : null;
+}
 /* Arriba de cada asignatura en «¿Qué habéis dado?»: marcar de un toque lo que lleva la clase. Si ya está todo marcado,
-   lo dice (y el foco, tras pulsar, va a ese texto). Sin lista para esa asignatura, no sale nada. */
+   lo dice (y el foco, tras pulsar, va a ese texto); si el botón marcó varias asignaturas a la vez, dice en cuántas, para
+   que se vea que también cambiaron las demás. Sin lista para esa asignatura, no sale nada.
+   N es siempre el número de asignaturas con lista de la clase entre las de esta alta (sin «mis»: en «ajustes» no son
+   todas las del alumno, y alguna puede no tener lista). */
 function cajaClaseAlta(a) {
   const claves = temasClase(a), v = V(a);
   if (!claves.length) return "";
   const faltan = claves.filter((k) => !dadoEnClase(k, S.ini.modelo)).length;
-  if (!faltan) return `<div class="caja"><p class="detalle" id="clase-detalle" tabindex="-1">Marcado lo que lleva la clase (${esc(segunClase())}): ${cuantos(claves.length, a)}. Puedes quitar o añadir ${v.los === "las" ? "alguna" : "alguno"} abajo.</p></div>`;
+  const alguno = v.los === "las" ? "alguna" : "alguno";
+  const enVarias = S.ini.claseTodas > 1;
+  const yaMarcado = enVarias
+    ? `Marcado lo que lleva la clase en ${S.ini.claseTodas} asignaturas (${esc(segunClase())}); en esta, ${cuantos(claves.length, a)}. Puedes quitar o añadir ${alguno} abajo.`
+    : `Marcado lo que lleva la clase (${esc(segunClase())}): ${cuantos(claves.length, a)}. Puedes quitar o añadir ${alguno} abajo.`;
+  if (!faltan) return `<div class="caja"><p class="detalle" id="clase-detalle" tabindex="-1">${yaMarcado}</p></div>`;
+  const todas = claseEnTodas();
+  const detalle = todas
+    ? `Lo que lleva la clase, ${esc(segunClase())}, en ${todas.length} asignaturas (en esta, ${cuantos(claves.length, a)}). Después puedes quitar o añadir ${alguno} en cada una.`
+    : `Lo que lleva la clase, ${esc(segunClase())}: ${cuantos(claves.length, a)}. Después puedes quitar o añadir ${alguno}.`;
   return `<div class="caja"><p class="tarea-t">¿No sabes bien qué habéis dado?</p>
-    <p class="detalle" id="clase-detalle">Lo que lleva la clase, ${esc(segunClase())}: ${cuantos(claves.length, a)}. Después puedes quitar o añadir ${v.los === "las" ? "alguna" : "alguno"}.</p>
-    <button type="button" class="boton bloque" id="clase-marcar" data-accion="ini-clase" data-asig="${a}" aria-describedby="clase-detalle">Marcar lo que lleva la clase</button></div>`;
+    <p class="detalle" id="clase-detalle">${detalle}</p>
+    <button type="button" class="boton bloque" id="clase-marcar" data-accion="ini-clase" data-asig="${a}" aria-describedby="clase-detalle">${todas ? `Marcar lo que lleva la clase en ${todas.length} asignaturas` : "Marcar lo que lleva la clase"}</button></div>`;
 }
 /* Un bloque en «¿Qué habéis dado?»: su nombre, cuántos hay marcados, «Todo» y una casilla por tema (como en «Nuevo
    examen»). Los de destreza no se marcan: cuentan como dados desde el principio. */
@@ -1413,12 +1596,13 @@ function vHoy() {
   ${cuerpo}
   ${avisoSinMarcar()}`;
 }
-/* Abajo en Hoy, las asignaturas que aún no tienen nada marcado como dado: hasta que se marque en Temario, no entran en
-   el plan (pasa si se terminó el alta antes de llegar a ellas). Sin ninguna, no sale nada. */
+/* Abajo en Hoy, las asignaturas que aún no tienen nada marcado como dado (pasa si se terminó el alta antes de llegar a
+   ellas). Sí entran en el plan (sus destrezas cuentan como dadas), pero lo que habéis dado en clase no, hasta que se
+   marque en Temario. Sin ninguna, no sale nada. */
 function avisoSinMarcar() {
   const sin = misAsignaturas().filter((a) => !algoMarcado(a, prog));
   if (!sin.length) return "";
-  return `<div class="caja"><p class="detalle" id="sin-marcar">Sin marcar lo dado: ${esc(lista(sin.map((a) => AS[a].corto)))}. Hasta que lo marques en Temario, no ${sin.length === 1 ? "entra" : "entran"} en tu plan.</p>
+  return `<div class="caja"><p class="detalle" id="sin-marcar">Sin marcar lo dado: ${esc(lista(sin.map((a) => AS[a].corto)))}. Lo que habéis dado de ${sin.length === 1 ? "esa asignatura" : "esas asignaturas"} no entra en tu plan hasta que lo marques en Temario.</p>
     <button type="button" class="boton bloque" id="ir-marcar" data-accion="ir" data-vista="temario" aria-describedby="sin-marcar">Marcar en Temario</button></div>`;
 }
 
@@ -1468,6 +1652,43 @@ function vAjustar() {
 
 /* ---------- Sesión: Historia, ejercicio 1 (texto con errores) ---------- */
 function nuevaSesion(textoId, tareaId) { S.ses = { texto: textoId, tarea: tareaId || null, paso: 1, marcados: [], resp: {}, auto: {}, inicio: Date.now(), aviso: "" }; S.vista = "sesion"; }
+/* Vuelve a abrir el texto con errores que el alumno dejó a medias (desde el borrador del navegador). Solo si es de hoy y
+   sigue siendo una tarea pendiente del plan de hoy con ese mismo texto. Se comprueba todo lo que se lee: si algo no
+   cuadra, se descarta, se borra del borrador y se abre Hoy como siempre. Devuelve true si lo ha recuperado. */
+function recuperarSesion(d) {
+  try {
+    comprobarSesionGuardada(d);
+    S.ses = { texto: d.texto, tarea: d.tarea, paso: d.paso, marcados: d.marcados, resp: d.resp, auto: d.auto,
+      inicio: Number.isFinite(d.inicio) ? d.inicio : Date.now(), aviso: "" };
+    S.vista = "sesion";
+    borradorRecuperado("ses");
+    return true;
+  } catch (e) {
+    escribirBorrador({});  // no vale: se borra (con un progreso guardado, la parte del alta tampoco sirve ya)
+    return false;
+  }
+}
+/* ¿Es un objeto (y no una lista)? true o false. Ejemplo: esObjeto({}) -> true; esObjeto([]) -> false. */
+function esObjeto(x) { return !!x && typeof x === "object" && !Array.isArray(x); }
+/* Comprueba el texto a medias guardado en el borrador: que sea de hoy, de una tarea pendiente con ese texto, y que
+   cada parte tenga la forma que espera la app. Si algo no cuadra, lanza un error (y recuperarSesion lo descarta). */
+function comprobarSesionGuardada(d) {
+  const t = esObjeto(d) && d.fecha === hoyISO() ? TEXTO[d.texto] : null;
+  const tarea = t ? pendientes().find((x) => x.id === d.tarea) : null;
+  if (!tarea || tarea.tipo !== "ej1" || tarea.texto !== d.texto) throw new Error("no es de hoy");
+  // Los trozos señalados: como mucho dos, sin repetir, y que existan en el texto
+  const marcados = Array.isArray(d.marcados) ? d.marcados : null;
+  if (!marcados || marcados.length > 2 || new Set(marcados).size !== marcados.length) throw new Error("marcados");
+  if (!marcados.every((i) => Number.isInteger(i) && i >= 0 && i < t.trozos.length)) throw new Error("marcados");
+  // Lo escrito (explicación y corrección) y la autoevaluación: textos
+  if (!esObjeto(d.resp) || !esObjeto(d.auto)) throw new Error("resp");
+  for (const r of Object.values(d.resp)) {
+    if (!esObjeto(r) || ["expl", "bien"].some((c) => r[c] !== undefined && typeof r[c] !== "string")) throw new Error("resp");
+  }
+  if (!Object.values(d.auto).every((v) => typeof v === "string")) throw new Error("auto");
+  // El paso: del 1 al 3, y para pasar del 1 hace falta algo señalado
+  if (![1, 2, 3].includes(d.paso) || (d.paso > 1 && !marcados.length)) throw new Error("paso");
+}
 function cabSesion(paso, etiqueta) {
   const t = TEXTO[S.ses.texto];
   return `
@@ -1877,8 +2098,14 @@ function V(asig) {
 }
 /* «1 tema», «3 temas», «2 preguntas»… */
 function cuantos(n, asig) { const v = V(asig); return n + " " + (n === 1 ? v.t : v.ts); }
-/* Une una lista como se dice: «a», «a y b», «a, b y c». */
-function lista(partes) { return partes.length < 2 ? partes.join("") : partes.slice(0, -1).join(", ") + " y " + partes[partes.length - 1]; }
+/* Une una lista como se dice: «a», «a y b», «a, b y c». Delante de una palabra que suena «i» (empieza por «i» o «hi»)
+   va «e» en vez de «y»: «Lengua e Inglés», «Lengua e Historia»; pero «hie…» no cuenta: «agua y hierro». */
+function lista(partes) {
+  if (partes.length < 2) return partes.join("");
+  const ultima = partes[partes.length - 1];
+  const suenaI = /^h?[ií]/i.test(ultima) && !/^hie/i.test(ultima);
+  return partes.slice(0, -1).join(", ") + (suenaI ? " e " : " y ") + ultima;
+}
 const GALON = '<svg class="galon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>';
 const FLECHA = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>';
 const ICONO_MARCA = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>';
@@ -2328,19 +2555,33 @@ function vExamen() {
   <div class="pie-ex"><div role="status" id="pie-ex-estado">${pieExamen()}</div>
     <button type="button" class="boton principal grande bloque" id="guardar-examen" data-accion="guardar-examen"${x.aviso ? "" : ' aria-describedby="resumen-ex"'}${listo ? "" : " disabled"}>Guardar examen</button></div>`;
 }
+/* Quita el color que solo había puesto un examen a sus temas, cuando ese examen deja de contar para ellos (se borra, se
+   le quitan temas o pasa a «Aún no lo sé»). Por qué: un tema sin dar en clase recibe color al entrar en un examen con
+   fecha ({ desde: "examen" }) y así entra en el plan; si el examen ya no lo incluye, el plan lo seguiría sacando cada
+   día sin motivo. Solo se borra si el color lo puso un examen y nada más: no se cambió a mano en Temario
+   (cambiadoAMano), no se ha estudiado (ultimo), no entra en otro examen con fecha de la misma asignatura y no está
+   dado en clase. asig: la asignatura · ids: ids de tema (p. ej. ["c06", "c07"]) · idExamen: el examen que deja de
+   contar (no cuenta como «otro examen»).
+   Ejemplo: Historia con c06 { estado: "amarillo", desde: "examen" } solo en el examen ex-1:
+   quitarColorDeExamen("historia", ["c06"], "ex-1") -> c06 vuelve a «Aún no dada» y sale del plan. */
+function quitarColorDeExamen(asig, ids, idExamen) {
+  for (const id of ids) {
+    const key = asig + ":" + id, tm = prog.temas[key];
+    const enOtro = examenesVivos().some((e) => e.id !== idExamen && e.asig === asig && e.temas.includes(id));
+    if (tm && tm.desde === "examen" && !tm.cambiadoAMano && !tm.ultimo && !enOtro && !dadoEnClase(key)) delete prog.temas[key]; // lo dado en clase, no
+  }
+}
 /* «Guardar examen»: lo guarda, rehace el plan de hoy y se queda en la pantalla con un aviso de lo guardado. */
 function guardarExamen() {
   const x = S.ex;
   const temas = AS[x.asig].temas.map((t) => t.id).filter((id) => x.temas.has(id));
   const ex = { id: x.id || "ex-" + Date.now().toString(36), asig: x.asig, fecha: x.nose ? "" : x.fecha, nombre: x.nombre.trim().slice(0, 80), temas };
+  const antes = prog.examenes.find((e) => e.id === ex.id); // al editar, el examen como estaba (para ver qué se ha quitado)
   prog.examenes = prog.examenes.filter((e) => e.id !== ex.id).concat([ex]);
-  // Sin fecha, el examen no cuenta: se quita el color que solo puso él al tener fecha (si no se tocó a mano, no se ha
-  // estudiado y no entra en otro examen con fecha).
-  if (x.nose) for (const id of temas) {
-    const key = x.asig + ":" + id, tm = prog.temas[key];
-    const enOtro = examenesVivos().some((e) => e.id !== ex.id && e.asig === x.asig && e.temas.includes(id));
-    if (tm && tm.desde === "examen" && !tm.cambiadoAMano && !tm.ultimo && !enOtro && !dadoEnClase(key)) delete prog.temas[key]; // lo dado en clase, no
-  }
+  // Al editar, lo que ya no entra pierde el color que solo puso este examen (si cambió de asignatura, todo lo de antes)
+  if (antes) quitarColorDeExamen(antes.asig, antes.asig === ex.asig ? antes.temas.filter((id) => !temas.includes(id)) : antes.temas, ex.id);
+  // Sin fecha, el examen no cuenta: se quita el color que solo puso él al tener fecha
+  if (x.nose) quitarColorDeExamen(x.asig, temas, ex.id);
   // Lo que entra y aún no tenía color entra en el plan con el de «¿Cómo llevas…?». Sin fecha, aún no: el examen no cuenta.
   if (!x.nose) for (const id of temas) {
     const key = x.asig + ":" + id;
@@ -2442,6 +2683,7 @@ function abrirTarea(t) {
 function cambioDeFuera() { replanificar(); guardarProg(); }
 
 document.addEventListener("click", (ev) => {
+  if (alDiaConOtraPestana(true)) return;  // otra pestaña había guardado: la pantalla se ha puesto al día y este toque no cuenta
   const b = ev.target.closest("[data-accion]");
   if (!b || b.disabled) return;
   const acc = b.dataset.accion;
@@ -2464,12 +2706,16 @@ document.addEventListener("click", (ev) => {
   }
   if (acc === "clase-marcar") return marcarClaseTemario(b.dataset.asig);
   if (acc === "ini-clase") {
-    // Marca lo que lleva la clase (sin quitar nada) y abre los bloques donde está, para que se vea qué ha marcado
-    const a = b.dataset.asig, claves = temasClase(a);
+    // Marca lo que lleva la clase (sin quitar nada) y abre los bloques donde está, para que se vea qué ha marcado.
+    // La primera vez, en todas las asignaturas con lista (ver claseEnTodas); los bloques se abren solo en la de la pantalla
+    const a = b.dataset.asig, claves = temasClase(a), todas = claseEnTodas();
+    for (const x of todas || []) for (const k of temasClase(x)) marcarDadoAlta(k, true);
     for (const k of claves) { marcarDadoAlta(k, true); S.ini.abiertos[a + ":" + BLOQUE_DE[k].b.id] = true; }
+    // En cuántas ha marcado (ver iniciarArranque); si ya lo había usado en varias, se queda ese número
+    S.ini.claseTodas = todas ? todas.length : S.ini.claseTodas || 1;
     pintar();
     const t = document.getElementById("clase-detalle"); if (t) t.focus();
-    anunciar("Marcado lo que lleva la clase: " + cuantos(claves.length, a) + ".");
+    anunciar(todas ? "Marcado lo que lleva la clase en " + todas.length + " asignaturas." : "Marcado lo que lleva la clase: " + cuantos(claves.length, a) + ".");
     return;
   }
   if (acc === "ini-examenes") {
@@ -2610,15 +2856,25 @@ document.addEventListener("click", (ev) => {
   if (acc === "borrar-examen") { S.borrar = true; return repintar(); }
   if (acc === "no-borrar") { S.borrar = false; return repintar(); }
   if (acc === "si-borrar") {
+    const borrado = prog.examenes.find((e) => e.id === S.ex.id);
     prog.examenes = prog.examenes.filter((e) => e.id !== S.ex.id);
+    if (borrado) quitarColorDeExamen(borrado.asig, borrado.temas, borrado.id); // lo que solo tenía color por él, fuera
     cambioDeFuera(); S.ex = null; S.borrar = false; return ir("examenes");
   }
 });
 document.addEventListener("change", (ev) => {
+  // (como en «click». En un desplegable o una fecha, el cambio descartado ya se ve: se repinta para deshacerlo. En una
+  // casilla, «click» llega antes y ya puso la pantalla al día, así que aquí su cambio sí cuenta, sobre lo último guardado)
+  if (alDiaConOtraPestana(true)) { repintar(document.activeElement); return; }
   const el = ev.target, acc = el.dataset ? el.dataset.accion : "";
   if (!acc) return;
   /* arranque */
-  if (acc === "ini-asig") { S.ini.asignaturas[el.checked ? "add" : "delete"](el.value); return repintar(el); }
+  if (acc === "ini-asig") {
+    S.ini.asignaturas[el.checked ? "add" : "delete"](el.value);
+    // Si cambian las asignaturas, «en N asignaturas» ya no sería verdad: el texto vuelve al de una sola asignatura
+    if (S.ini.claseTodas > 1) S.ini.claseTodas = 1;
+    return repintar(el);
+  }
   if (acc === "ini-dia") { S.ini.ocupadas[el.checked ? "add" : "delete"](Number(el.value)); return repintar(el); }
   if (acc === "ini-como") { S.ini.comoVa[el.name.slice(3)] = el.value; return repintar(el); }
   if (acc === "ini-dado") { marcarDadoAlta(el.dataset.key, el.checked); return repintar(el); }
@@ -2701,8 +2957,16 @@ document.addEventListener("keydown", (ev) => {
   if (ev.shiftKey && (activo === primero || activo === hoja || !hoja.contains(activo))) { ev.preventDefault(); ultimo.focus(); }
   else if (!ev.shiftKey && (activo === ultimo || !hoja.contains(activo))) { ev.preventDefault(); primero.focus(); }
 });
+/* Cada letra tecleada. Primero se apunta lo escrito y después se pone al día con otra pestaña (sin descartar nada,
+   al contrario que «click» y «change»): estas ramas solo cambian lo que está a medias en memoria, nunca guardan
+   progreso, así que no pueden pisar lo de la otra pestaña, y descartar la letra la perdería. */
 document.addEventListener("input", (ev) => {
-  const el = ev.target;
+  apuntarTecleo(ev.target);
+  alDiaConOtraPestana();
+});
+/* Apunta en memoria lo que se acaba de teclear en un campo: la explicación o la corrección del texto con errores, el
+   alias del alta o el nombre de un examen. */
+function apuntarTecleo(el) {
   if (el.dataset && el.dataset.campo && S.ses) { const i = el.dataset.i; S.ses.resp[i] = S.ses.resp[i] || {}; S.ses.resp[i][el.dataset.campo] = el.value; }
   if (el.dataset && el.dataset.accion === "ini-alias" && S.ini) {
     // Sin repintar (no se pierde el foco): solo el aviso de debajo y si se puede seguir
@@ -2721,7 +2985,7 @@ document.addEventListener("input", (ev) => {
     if (pie && pie.innerHTML !== nuevo.innerHTML) { pie.innerHTML = nuevo.innerHTML; ajustarHuecos(); el.scrollIntoView({ block: "nearest" }); }
     const g = document.getElementById("guardar-examen"); if (g) g.setAttribute("aria-describedby", "resumen-ex");
   }
-});
+}
 
 /* El reloj se actualiza solo en su vista; al volver a la página, se repinta por si toca el aviso de olvido o ha cambiado el día. */
 setInterval(() => {
@@ -2740,12 +3004,26 @@ function avisarOlvido() {
 document.addEventListener("visibilitychange", async () => {
   if (document.hidden) { marcarVisto(); return; }
   apuntarApertura();
+  // Primero lo último guardado, para que una pestaña dormida no pise lo hecho en otra pestaña u otro dispositivo. En modo
+  // local, también en el alta (sin progreso): quizá se terminó en otra pestaña
+  if (A.modo === "local") alDiaConOtraPestana();
+  else if (prog) await refrescar();
   if (!prog) return;
-  await refrescar(); // primero lo último de la cuenta: una pestaña dormida no pisa lo que se hizo en otro dispositivo
   normalizaDia();
   if (S.vista === "reloj" && olvidado() && !document.querySelector(".aviso")) avisarOlvido();
   else if (S.vista === "hoy" || S.vista === "reloj" || S.vista === "semana") repintarSiCambia();
 });
+/* Otra pestaña de la app ha guardado (el navegador avisa a las demás) o la página vuelve de la caché de «atrás»: se
+   pone al día con lo guardado (solo en modo «local»; con la base de datos de claude.ai ya lo hacen sus avisos). */
+window.addEventListener("storage", (ev) => { if (ev.key === CLAVE) alDiaConOtraPestana(); });
+window.addEventListener("pageshow", (ev) => { if (ev.persisted) alDiaConOtraPestana(); });
+/* Después de cada toque, cambio o tecla, lo que esté a medias se guarda en el borrador. Van después de los oyentes de
+   arriba para que corran cuando ya han cambiado el estado (esos terminan con «return» en cuanto saben qué hacer).
+   También al abrir o cerrar un bloque a mano: eso llega en «toggle», después del toque. */
+document.addEventListener("click", guardarBorrador);
+document.addEventListener("change", guardarBorrador);
+document.addEventListener("input", guardarBorrador);
+document.addEventListener("toggle", guardarBorrador, true);
 
 arrancar();
 </script>
