@@ -449,12 +449,13 @@ const CUOTA = {
   },
   recienteDias: 7,      // los «últimos 7 días» de arriba
   variosExamenes: 3,    // con 3 exámenes o más a 7 días o menos (diasCerca)…
-  minimoVarios: 90,     // …como poco 1 h 30 min los días de estudio (la mitad con la tarde ocupada)
+  minimoVarios: 90,     // …como poco 1 h 30 min los días de estudio (la mitad con la tarde ocupada), sin pasar del
+                        // doble de los minutos del día (vecesCarga): con 20 elegidos, 40; con 40, 80 (Luis, 19/11/2026)
   techoCarga: 180,      // lo más que piden en un día los exámenes: 3 h (3 tareas de 60), para no quitar sueño
   ventanaCarga: 14,     // lo que queda por estudiar cuenta para los exámenes de los próximos 14 días
-  vecesCarga: 2,        // lo que queda por estudiar pide como mucho el doble de tus minutos del día (sin contar el mínimo
-                        // de 3 exámenes); 0 = sin ese tope. En el simulador (simulador/resultados/carga.md), sin este
-                        // tope un 30 % dejaba la app; con él, ganan los de 40 y 60 min y solo pierden los de 20
+  vecesCarga: 2,        // los exámenes piden como mucho el doble de tus minutos del día (también el mínimo de 3
+                        // exámenes); 0 = sin ese tope. En el simulador (simulador/resultados/carga.md), sin este tope un
+                        // 30 % dejaba la app; con él, nadie pierde frente al 18/11 y ganan los de 40 y 60 min
   maxTareasCarga: 4,    // esos días, hasta 4 tareas (de exámenes distintos); los demás, 3
   /* La regla de cada valor elegido. Sin examen cerca, siempre a (lo elegido). lejos, cerca, vispera: por cuánto se
      multiplica a con un examen en ese tramo. extraVispera: en la víspera, esa parte de a se suma como «minutos de más»
@@ -1173,8 +1174,9 @@ function minutosDeTramo(minutos, dias) {
    del último día de su tramo, lo que el plan puede dar de verdad (minutosDeTramo). Solo nombra los tramos que cambian.
    Ejemplos: con 20, «Cada día, 20 min (los viernes, libres, salvo con un examen en 3 días o menos). Con un examen a
    3-7 días, 30; los 2 días antes, hasta 40. Con mucho por estudiar para tus exámenes, hasta 40; con 3 exámenes o más en
-   una semana, como poco 90 (la mitad con la tarde ocupada). Puedes…»; con 40, «Cada día, 40 min (…). Los 2 días antes
-   de un examen, hasta 60. Con mucho por estudiar para tus exámenes, hasta 80; …». */
+   una semana, como poco 40 (la mitad con la tarde ocupada). Puedes…»; con 40, «Cada día, 40 min (…). Los 2 días antes
+   de un examen, hasta 60. Con mucho por estudiar para tus exámenes, hasta 80; con 3 exámenes…, como poco 80 (…). La
+   víspera de cada examen, siempre una tarea suya (15 min como poco). Puedes…». */
 function explicacionTiempo(minutos) {
   const K = CUOTA, t = (dias) => minutosDeTramo(minutos, dias);
   const cambiar = " Puedes cambiarlo cuando quieras en Temario.";
@@ -1186,7 +1188,9 @@ function explicacionTiempo(minutos) {
   else if (subeVispera) examen = " Los " + K.diasVispera + " días antes de un examen, hasta " + t(K.diasVispera) + ".";
   // Desde el 19/11/2026: lo que piden los exámenes aparte de los minutos elegidos (necesidadDeExamenes)
   const doble = K.vecesCarga ? Math.min(K.techoCarga, K.vecesCarga * minutos) : K.techoCarga;
-  const varios = " Con mucho por estudiar para tus exámenes, hasta " + doble + "; con " + K.variosExamenes + " exámenes o más en una semana, como poco " + K.minimoVarios + " (la mitad con la tarde ocupada).";
+  const suelo = Math.min(K.minimoVarios, doble);  // el mínimo de 3 exámenes, con el mismo tope del doble
+  const varios = " Con mucho por estudiar para tus exámenes, hasta " + doble + "; con " + K.variosExamenes + " exámenes o más en una semana, como poco " + suelo + " (la mitad con la tarde ocupada)."
+    + " La víspera de cada examen, siempre una tarea suya (" + K.minimoVispera + " min como poco).";
   return "Cada día, " + t(null) + " min (" + viernes + ")." + examen + varios + cambiar;
 }
 /* Los minutos del alumno el día f: los que eligió (minutos), o la mitad si esa tarde está ocupada (ocupadas: los días
@@ -1304,8 +1308,9 @@ function pesoDelDia(d) {
    - minutos: lo que queda por estudiar para los exámenes de los próximos 14 días, repartido entre los días de estudio
      que quedan hasta cada uno (pesoDelDia). Para cada examen se suma lo suyo y lo de los que van antes, y manda el que
      más pide al día; así nada se deja para el último día. Con 3 exámenes o más a 7 días o menos, como poco 90 (la mitad
-     con la tarde ocupada). Redondeado a 5 hacia arriba, con el techo de 3 h (CUOTA.techoCarga) y, salvo ese mínimo,
-     como mucho el doble de los minutos del día (CUOTA.vecesCarga).
+     con la tarde ocupada). Redondeado a 5 hacia arriba, con el techo de 3 h (CUOTA.techoCarga) y como mucho el doble
+     de los minutos del día (CUOTA.vecesCarga), también el mínimo de 3 exámenes (decidido por Luis el 19/11/2026: con
+     20 elegidos, 40; con 40, 80; con 60, 90).
    - varios: true si manda el mínimo de 3 exámenes (para la frase de Hoy).
    Ejemplo: el lunes, con Historia el jueves, 3 temas «Sin estudiar» (300 min) y 60 min elegidos -> { minutos: 100 }
    (lunes, martes y miércoles, 100 cada día); con 40 elegidos, 80 (el doble). */
@@ -1325,7 +1330,7 @@ function necesidadDeExamenes(f, ctx) {
   const deCarga = porDia * peso;
   const varios = exs.filter((e) => e.dias <= CUOTA.diasCerca).length >= CUOTA.variosExamenes ? CUOTA.minimoVarios * peso : 0;
   const a = minutosDelDia(f, prog.minutos, prog.ocupadas);
-  const techo = CUOTA.vecesCarga ? Math.min(CUOTA.techoCarga, Math.max(CUOTA.vecesCarga * a, varios)) : CUOTA.techoCarga;
+  const techo = CUOTA.vecesCarga ? Math.min(CUOTA.techoCarga, CUOTA.vecesCarga * a) : CUOTA.techoCarga;
   const minutos = Math.min(techo, Math.ceil(Math.max(deCarga, varios) / 5) * 5);
   return { minutos, varios: varios > 0 && varios >= deCarga };
 }
