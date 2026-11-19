@@ -437,6 +437,25 @@ const CUOTA = {
   },
   tareaMinima: 15,      // ninguna tarea de menos de 15 min: lo que quede por debajo se suma a otra
   pausa: 40,            // en las tareas de 40 min o más, la actividad sugiere una pausa a mitad
+  /* Varios exámenes y la víspera (decidido por Luis el 19/11/2026; la investigación, en
+     docs/investigacion/reports/Varios exámenes cerca y la víspera.md): con mucho por estudiar, los minutos del día
+     salen de lo que queda, no solo de lo elegido, y ningún examen se queda sin tarea la víspera. */
+  minimoVispera: 15,    // cada examen de mañana tiene su tarea, de 15 min como poco (da seguridad y quita agobio)
+  pendiente: {          // los minutos que aún pide cada tema para su examen, según cómo lo llevas:
+    rojo: 100,          //   «Sin estudiar»: el primer estudio (60) y una hoja en blanco (40)
+    amarillo: 40,       //   «Estudiado una vez»: una hoja en blanco (40)
+    verde: 60,          //   «Repasado»: una práctica tipo PAU (60), si no lo estudiaste en los últimos 7 días
+    estrella: 20,       //   «Lo sé sin apuntes»: un mantenimiento (20), si no lo estudiaste en los últimos 7 días
+  },
+  recienteDias: 7,      // los «últimos 7 días» de arriba
+  variosExamenes: 3,    // con 3 exámenes o más a 7 días o menos (diasCerca)…
+  minimoVarios: 90,     // …como poco 1 h 30 min los días de estudio (la mitad con la tarde ocupada)
+  techoCarga: 180,      // lo más que piden en un día los exámenes: 3 h (3 tareas de 60), para no quitar sueño
+  ventanaCarga: 14,     // lo que queda por estudiar cuenta para los exámenes de los próximos 14 días
+  vecesCarga: 2,        // lo que queda por estudiar pide como mucho el doble de tus minutos del día (sin contar el mínimo
+                        // de 3 exámenes); 0 = sin ese tope. En el simulador (simulador/resultados/carga.md), sin este
+                        // tope un 30 % dejaba la app; con él, ganan los de 40 y 60 min y solo pierden los de 20
+  maxTareasCarga: 4,    // esos días, hasta 4 tareas (de exámenes distintos); los demás, 3
   /* La regla de cada valor elegido. Sin examen cerca, siempre a (lo elegido). lejos, cerca, vispera: por cuánto se
      multiplica a con un examen en ese tramo. extraVispera: en la víspera, esa parte de a se suma como «minutos de más»
      del examen (van a una tarea suya; 0 = nada). (El simulador ponía en la regla de 20 un tope de 25 sin exámenes, que
@@ -489,7 +508,9 @@ let prog = null;   // progreso del alumno
 let reloj = null;  // reloj en marcha (o null)
 const CLAVE = "brujula-0.1";
 
-function hoyNuevo() { return { fecha: hoyISO(), plan: null, hechos: [], ajuste: null, comodin: false, festivo: false }; }
+/* El día de hoy, vacío. antes (desde el 19/11/2026): cómo estaba cada tema antes de su primera sesión de hoy
+   ({ estado, ultimo }), para que los minutos que piden los exámenes no cambien a media tarde (minutosPendientes). */
+function hoyNuevo() { return { fecha: hoyISO(), plan: null, hechos: [], ajuste: null, comodin: false, festivo: false, antes: {} }; }
 function progresoNuevo() {
   return { v: 1, version: 2, dados: 2, creado: hoyISO(), asignaturas: [], ocupadas: [], minutos: MINUTOS_DEFECTO, comoVa: {}, vaisPor: {}, ritmoPreguntar: [], preguntar: [],
     temas: {}, examenes: [], textos: {}, puntos: {}, fondo: {}, comodines: [], hoy: hoyNuevo(), tiempos: {} };
@@ -601,6 +622,7 @@ function normaliza(p) {
   if (!r.hoy || r.hoy.fecha !== hoyISO() || !("plan" in r.hoy)) r.hoy = hoyNuevo();
   r.hoy = Object.assign(hoyNuevo(), r.hoy);
   if (!Array.isArray(r.hoy.hechos)) r.hoy.hechos = [];
+  if (!r.hoy.antes || typeof r.hoy.antes !== "object" || Array.isArray(r.hoy.antes)) r.hoy.antes = {};
   quitarVocabularioViejo(r);
   return r;
 }
@@ -1150,8 +1172,9 @@ function minutosDeTramo(minutos, dias) {
    y de las funciones del plan (nunca escritos a mano: si la regla cambia, la explicación cambia sola); cada cifra es la
    del último día de su tramo, lo que el plan puede dar de verdad (minutosDeTramo). Solo nombra los tramos que cambian.
    Ejemplos: con 20, «Cada día, 20 min (los viernes, libres, salvo con un examen en 3 días o menos). Con un examen a
-   3-7 días, 30; los 2 días antes, hasta 40. Puedes…»; con 40, «Cada día, 40 min (…). Los 2 días antes de un examen,
-   hasta 60. Puedes…». */
+   3-7 días, 30; los 2 días antes, hasta 40. Con mucho por estudiar para tus exámenes, hasta 40; con 3 exámenes o más en
+   una semana, como poco 90 (la mitad con la tarde ocupada). Puedes…»; con 40, «Cada día, 40 min (…). Los 2 días antes
+   de un examen, hasta 60. Con mucho por estudiar para tus exámenes, hasta 80; …». */
 function explicacionTiempo(minutos) {
   const K = CUOTA, t = (dias) => minutosDeTramo(minutos, dias);
   const cambiar = " Puedes cambiarlo cuando quieras en Temario.";
@@ -1161,7 +1184,10 @@ function explicacionTiempo(minutos) {
   let examen = "";
   if (subeCerca) examen = " Con un examen a " + (K.diasVispera + 1) + "-" + K.diasCerca + " días, " + t(K.diasCerca) + (subeVispera ? "; " + vispera : "") + ".";
   else if (subeVispera) examen = " Los " + K.diasVispera + " días antes de un examen, hasta " + t(K.diasVispera) + ".";
-  return "Cada día, " + t(null) + " min (" + viernes + ")." + examen + cambiar;
+  // Desde el 19/11/2026: lo que piden los exámenes aparte de los minutos elegidos (necesidadDeExamenes)
+  const doble = K.vecesCarga ? Math.min(K.techoCarga, K.vecesCarga * minutos) : K.techoCarga;
+  const varios = " Con mucho por estudiar para tus exámenes, hasta " + doble + "; con " + K.variosExamenes + " exámenes o más en una semana, como poco " + K.minimoVarios + " (la mitad con la tarde ocupada).";
+  return "Cada día, " + t(null) + " min (" + viernes + ")." + examen + varios + cambiar;
 }
 /* Los minutos del alumno el día f: los que eligió (minutos), o la mitad si esa tarde está ocupada (ocupadas: los días
    de la semana, 0 = lunes), redondeada hacia abajo a 5 min. Ejemplo: con 40 y el lunes ocupado, minutosDelDia(un lunes,
@@ -1210,9 +1236,98 @@ function cuotaDia(f, ctx) {
   if (!cerca) extra = 0;
   else if (!extra && c > CUOTA.maxSinExtra) extra = c - CUOTA.maxSinExtra;
   let motivo = motivoCuota(f, cerca, c, festivo);
-  if (ctx && ctx.ajuste != null && ctx.ajuste < c) { c = ctx.ajuste; extra = 0; motivo = "Hoy vas justo de tiempo."; }
-  if (ctx && ctx.comodin) { c = 0; extra = 0; motivo = ""; }
-  return { c, motivo, extra, cerca };
+  // Desde el 19/11/2026: si lo que queda por estudiar (o tener 3 exámenes en una semana) pide más, se estudia eso
+  const ex = necesidadDeExamenes(f, ctx);
+  let carga = 0;
+  if (ex.minutos > c) {
+    c = ex.minutos; extra = 0; carga = ex.varios ? "varios" : "pendiente";
+    // Con un examen mañana o pasado, la frase sigue nombrándolo (es lo más concreto); si no, la dice motivoCarga
+    if (!(cerca && cerca.dias <= CUOTA.diasVispera)) motivo = "";
+  }
+  // La víspera, cada examen de mañana tiene su tarea: los minutos llegan para 15 cada uno; si ya se hizo algo hoy, para
+  // lo hecho y 15 más por cada examen de mañana que aún no tiene nada suyo hecho
+  const manana = examenesDeManana(f), hechos = (ctx && ctx.minHechos) || 0;
+  const faltan = manana.filter((e) => !hechoHoyDe(e, ctx)).length;
+  const minimo = Math.max(manana.length * CUOTA.minimoVispera, faltan ? hechos + faltan * CUOTA.minimoVispera : 0);
+  if (c < minimo) c = minimo;
+  if (c - extra < minimo) extra = c - minimo;  // los minutos de más no se comen esos 15 de cada uno
+  if (ctx && ctx.ajuste != null && ctx.ajuste < c) { c = Math.max(ctx.ajuste, minimo); extra = 0; carga = 0; motivo = "Hoy vas justo de tiempo."; }
+  if (ctx && ctx.comodin) { c = 0; extra = 0; carga = 0; motivo = ""; }
+  return { c, motivo, extra, cerca, carga, varios: ex.varios, minimo };
+}
+/* Los exámenes de mañana (visto desde f) con algún tema que se pueda estudiar, también si su asignatura tiene otro examen
+   hoy: la víspera nadie se queda sin tarea. Cada uno, con dias (1) y sus temas (keys). */
+function examenesDeManana(f) {
+  return examenesVivos().filter((e) => diasEntre(f, e.fecha) === 1)
+    .map((e) => Object.assign({ dias: 1, keys: e.temas.map((id) => e.asig + ":" + id).filter((k) => TEMA[k] && dado(k)) }, e))
+    .filter((e) => e.keys.length);
+}
+/* ¿Ya se hizo hoy una tarea de un tema de este examen? (ctx.excluir: los temas hechos hoy). */
+function hechoHoyDe(e, ctx) { return !!(ctx && ctx.excluir) && e.keys.some((k) => ctx.excluir.has(k)); }
+/* Los exámenes de los próximos CUOTA.ventana días que cuentan en el plan del día f: sin las asignaturas que tienen
+   examen ese mismo día (descansan) y solo los que tienen algún tema que se pueda estudiar (dado en clase o con color).
+   Cada uno lleva sus días hasta él (dias) y sus temas (keys). Ejemplo: [{ asig: "historia", dias: 3, keys: [...] }]. */
+function examenesDelPlan(f) {
+  const hoyEx = new Set(examenesVivos().filter((e) => e.fecha === f).map((e) => e.asig));
+  return proximos(f, CUOTA.ventana).filter((e) => !hoyEx.has(e.asig))
+    .map((e) => Object.assign({ keys: e.temas.map((id) => e.asig + ":" + id).filter((k) => TEMA[k] && dado(k)) }, e))
+    .filter((e) => e.keys.length);
+}
+/* Los minutos que aún pide un tema para su examen (CUOTA.pendiente), según su estado y su última sesión (ultimo: la
+   función que la da, la de verdad o la prevista en «Tu semana»).
+   - Hoy, un tema ya estudiado hoy cuenta como estaba antes de su primera sesión (prog.hoy.antes): así los minutos de
+     hoy no cambian a media tarde, tampoco con «Estudiar otra cosa».
+   - En «Tu semana», un tema con sesiones previstas (ultimo, y anterior, distintos de los de verdad) cuenta como si le
+     hubieran salido bien: con una, «Sin estudiar» pasa a pedir lo de «Estudiado una vez» (40) y los demás, nada; con
+     dos, nada.
+   Ejemplos: «Sin estudiar» -> 100; «Repasado» estudiado hace 3 días -> 0, y hace 10 -> 60. */
+function minutosPendientes(key, f, ultimo, anterior = anteriorDe) {
+  let est = estadoDe(key) || "rojo", u = ultimo(key);
+  const antes = prog.hoy && prog.hoy.fecha === f && prog.hoy.antes && prog.hoy.antes[key];
+  const real = ultimoDe(key) || "";
+  if (antes) { est = antes.estado; u = antes.ultimo; }
+  else if (u && u !== real) {
+    const dos = (anterior(key) || "") > real;  // la sesión de antes también es prevista
+    return est === "rojo" && !dos ? CUOTA.pendiente.amarillo : 0;
+  }
+  if (est === "rojo" || est === "amarillo") return CUOTA.pendiente[est];
+  return u && diasEntre(u, f) < CUOTA.recienteDias ? 0 : CUOTA.pendiente[est];
+}
+/* Cuánto cuenta el día d para repartir lo que queda por estudiar: 1 un día normal, la mitad con la tarde ocupada y 0
+   un viernes libre (el viernes cuenta si hay un examen en 3 días o menos, como en la cuota). Ejemplo: un viernes con
+   el examen el martes -> 0. */
+function pesoDelDia(d) {
+  if (diaSemana(d) === 4) { const e = examenCerca(d); if (!e || e.dias > CUOTA.diasViernes) return 0; }
+  return prog.ocupadas.includes(diaSemana(d)) ? CUOTA.ocupada : 1;
+}
+/* Lo que piden los exámenes el día f, aparte de los minutos elegidos (desde el 19/11/2026):
+   - minutos: lo que queda por estudiar para los exámenes de los próximos 14 días, repartido entre los días de estudio
+     que quedan hasta cada uno (pesoDelDia). Para cada examen se suma lo suyo y lo de los que van antes, y manda el que
+     más pide al día; así nada se deja para el último día. Con 3 exámenes o más a 7 días o menos, como poco 90 (la mitad
+     con la tarde ocupada). Redondeado a 5 hacia arriba, con el techo de 3 h (CUOTA.techoCarga) y, salvo ese mínimo,
+     como mucho el doble de los minutos del día (CUOTA.vecesCarga).
+   - varios: true si manda el mínimo de 3 exámenes (para la frase de Hoy).
+   Ejemplo: el lunes, con Historia el jueves, 3 temas «Sin estudiar» (300 min) y 60 min elegidos -> { minutos: 100 }
+   (lunes, martes y miércoles, 100 cada día); con 40 elegidos, 80 (el doble). */
+function necesidadDeExamenes(f, ctx) {
+  // (ctx: el de planDia, con ultimo y anterior previstos en «Tu semana»; si no, los de verdad)
+  const ultimo = (ctx && ctx.ultimo) || ultimoDe, anterior = (ctx && ctx.anterior) || anteriorDe;
+  const exs = examenesDelPlan(f), peso = pesoDelDia(f);
+  if (!peso) return { minutos: 0, varios: false };
+  let acumulado = 0, porDia = 0;
+  const contados = new Set();  // un tema que entra en dos exámenes cuenta una vez (en el primero)
+  for (const e of exs.filter((x) => x.dias <= CUOTA.ventanaCarga)) {
+    for (const k of e.keys) if (!contados.has(k)) { contados.add(k); acumulado += minutosPendientes(k, f, ultimo, anterior); }
+    let dias = 0;
+    for (let d = f; d < e.fecha; d = sumarDias(d, 1)) dias += pesoDelDia(d);
+    if (dias) porDia = Math.max(porDia, acumulado / dias);
+  }
+  const deCarga = porDia * peso;
+  const varios = exs.filter((e) => e.dias <= CUOTA.diasCerca).length >= CUOTA.variosExamenes ? CUOTA.minimoVarios * peso : 0;
+  const a = minutosDelDia(f, prog.minutos, prog.ocupadas);
+  const techo = CUOTA.vecesCarga ? Math.min(CUOTA.techoCarga, Math.max(CUOTA.vecesCarga * a, varios)) : CUOTA.techoCarga;
+  const minutos = Math.min(techo, Math.ceil(Math.max(deCarga, varios) / 5) * 5);
+  return { minutos, varios: varios > 0 && varios >= deCarga };
 }
 /* El tipo de duración de una tarea, según lo que toca (CUOTA.duracion): «larga» el primer estudio (tema «Sin
    estudiar»), la práctica tipo PAU («Repasado») y el texto con errores; «media» la hoja en blanco o los problemas sin
@@ -1228,12 +1343,13 @@ function tipoDuracion(t) {
 /* Cuántos minutos se le dan a una tarea cuando quedan «queda» minutos del día y ya hay «n» tareas: los que necesita su
    tipo, nunca más (desde el 18/11/2026: una tarea de mantenimiento de 50 min no tiene sentido). Si después sobrarían
    menos de 15 (no dan para otra tarea) y aún cabe otra, se le quitan los que hagan falta para dejar 15 a la siguiente,
-   si ella sigue teniendo 15 o más. Ejemplos: queda 40, corta, n = 0 -> 20; queda 70, larga, n = 0 -> 55 (y 15 para
-   otra); queda 30, corta, n = 2 -> 20 (los otros 10 se suman a otra o se pierden). */
-function minutosDeTarea(t, queda, n) {
+   si ella sigue teniendo 15 o más. max: cuántas tareas caben ese día (3; 4 cuando los exámenes piden más minutos).
+   Ejemplos: queda 40, corta, n = 0 -> 20; queda 70, larga, n = 0 -> 55 (y 15 para otra); queda 30, corta, n = 2 -> 20
+   (los otros 10 se suman a otra o se pierden). */
+function minutosDeTarea(t, queda, n, max = 3) {
   let suyos = Math.min(queda, CUOTA.duracion[tipoDuracion(t)]);
   const resto = queda - suyos, falta = CUOTA.tareaMinima - resto;
-  if (resto > 0 && falta > 0 && n < 2 && suyos - falta >= CUOTA.tareaMinima) suyos -= falta;
+  if (resto > 0 && falta > 0 && n < max - 1 && suyos - falta >= CUOTA.tareaMinima) suyos -= falta;
   return suyos;
 }
 /* Suma unos minutos sueltos (menos de 15, no dan para otra tarea) a la última tarea que pueda crecer sin pasar el
@@ -1262,17 +1378,29 @@ function alargarDelExamen(suyas, extra) {
    de un día normal; si no, solo que es para ese examen. Así Hoy nunca dice «Hoy más» con los minutos de siempre, ni
    nombra un examen que no está en el plan. Las demás frases (festivo, «vas justo»…), tal cual. */
 function motivoVisible(cu, tareas, f) {
+  if (cu.carga && !cu.motivo) return motivoCarga(cu, tareas, f);
   if (!cu.cerca || !cu.motivo.includes("el examen de " + AS[cu.cerca.asig].corto)) return cu.motivo;
   const ids = [...new Set(tareas.filter((t) => t.examen).map((t) => t.examen))];
   const exs = ids.map((id) => examenesVivos().find((e) => e.id === id)).filter((e) => e && e.fecha > f);
   if (!exs.length) return fraseSinTareaDeExamen(cu, f);
   const mismos = exs.filter((e) => e.fecha === exs[0].fecha);
-  const nombres = lista(mismos.map((e) => AS[e.asig].corto)), cuando = cuandoExamen(exs[0].fecha, f);
+  const nombres = lista([...new Set(mismos.map((e) => AS[e.asig].corto))]), cuando = cuandoExamen(exs[0].fecha, f);
   const sujeto = mismos.length > 1 ? "los exámenes de " + nombres + " son " + cuando : "el examen de " + nombres + " es " + cuando;
   const total = tareas.reduce((s, t) => s + t.min, 0);
   if (diaSemana(f) === 4) return "Hoy era libre, pero " + sujeto + ".";
-  if (/^Hoy más/.test(cu.motivo) && total > cuotaBase(prog.minutos, prog.minutos, null, false, false).c) return "Hoy más, porque " + sujeto + ".";
+  if ((/^Hoy más/.test(cu.motivo) || cu.carga) && total > cuotaBase(prog.minutos, prog.minutos, null, false, false).c) return "Hoy más, porque " + sujeto + ".";
   return "Hoy, para " + (mismos.length > 1 ? "los exámenes de " + nombres + ", que son " : "el examen de " + nombres + ", que es ") + cuando + ".";
+}
+/* La frase de Hoy cuando los minutos los piden los exámenes (cu.carga, desde el 19/11/2026): con 3 o más a 7 días o
+   menos, cuántos son; si no, que queda mucho por estudiar para ellos. «Hoy más» solo si el plan (tareas) pasa de un
+   día normal. Ejemplos: «Hoy más, porque tienes 3 exámenes en los próximos 7 días.»; con la tarde ocupada, «Hoy, para
+   lo que te queda de tus exámenes.». */
+function motivoCarga(cu, tareas, f) {
+  const total = tareas.reduce((s, t) => s + t.min, 0);
+  const mas = total > cuotaBase(prog.minutos, prog.minutos, null, false, false).c;
+  const n = examenesDelPlan(f).filter((e) => e.dias <= CUOTA.diasCerca).length;
+  if (cu.carga === "varios") return mas ? "Hoy más, porque tienes " + n + " exámenes en los próximos " + CUOTA.diasCerca + " días." : "Hoy, para tus " + n + " exámenes de los próximos " + CUOTA.diasCerca + " días.";
+  return mas ? "Hoy más, porque te queda mucho por estudiar para tus exámenes." : "Hoy, para lo que te queda de tus exámenes.";
 }
 /* La frase de Hoy cuando ninguna tarea es de un examen aunque la cuota hable de uno (cu.cerca; pasa si ese examen no
    tiene temas que se puedan estudiar, p. ej. todos sin dar): ninguna, para no nombrar un examen que no está en el plan. */
@@ -1418,7 +1546,7 @@ function primerExamen(prox, ctx) {
    El tema de cada examen es el que peor recordarías el día de ese examen (mejorTema con su fecha).
    El día de un examen, esa asignatura descansa. */
 function planDia(f, ctx) {
-  const { c: cuota, motivo, extra, cerca } = cuotaDia(f, ctx);
+  const cu = cuotaDia(f, ctx), { c: cuota, motivo, extra, cerca } = cu;
   let base = cuota - extra, extraLibre = extra;
   const hecho = ctx.minHechos || 0;
   if (hecho > base) { extraLibre = Math.max(0, extra - (hecho - base)); base = 0; } else base -= hecho;
@@ -1431,12 +1559,24 @@ function planDia(f, ctx) {
   // La víspera de un único examen, ese se lleva dos tareas (si le quedan dos temas; si no, su tarea crece con los minutos de más).
   if (prox.filter((e) => e.dias === 1).length === 1 && libres(prox[0]) >= 2) orden.push(prox[0]);
   orden.push(...prox);
-  const fondoHoy = w === 6 || (w === 2 && prox.length < 2 && !(prox.length && prox[0].dias === 1));
+  const fondoHoy = !cu.carga && (w === 6 || (w === 2 && prox.length < 2 && !(prox.length && prox[0].dias === 1)));
   const poner = (t) => { tareas.push(t); usados.add(t.key); asigUsadas.add(t.asig); };
+  // Los exámenes de mañana: cada uno, su tarea (desde el 19/11/2026), salvo los que ya tienen hecho hoy algún tema suyo.
+  // También si su asignatura tiene otro examen hoy: la víspera manda.
+  const manana = examenesDeManana(f).filter((e) => libres(e) > 0 && !hechoHoyDe(e, ctx));
+  const faltaManana = () => manana.filter((e) => !tareas.some((x) => x.examen === e.id));
+  // 3 tareas al día; con los minutos que piden los exámenes, 4; y nunca menos que exámenes hay mañana
+  const maxTareas = Math.max(cu.carga ? CUOTA.maxTareasCarga : 3, manana.length);
   // La primera tarea del día: el examen que toque hoy (primerExamen); las siguientes, los demás por turno
   let vuelta = Math.max(0, orden.indexOf(primerExamen(prox, ctx))), queda = base, fondoPuesto = false;
   // Elige el siguiente tema como siempre: el repaso de fondo (segunda tarea de su día), el examen que toque o lo que sobra
   const siguiente = () => {
+    // Primero, los exámenes de mañana que aún no tienen tarea (el que lleva más sin una, como en primerExamen)
+    const sinTarea = faltaManana();
+    if (sinTarea.length) {
+      const e = primerExamen(sinTarea, ctx), key = mejorTema(temasEx(e), f, ctx, usados, e.fecha);
+      if (key) return { key, o: { fuente: "examen", examen: e } };
+    }
     if (fondoHoy && !fondoPuesto && tareas.length === 1) {
       fondoPuesto = true;
       const a = asigFondo(f, ctx, asigUsadas);
@@ -1453,11 +1593,13 @@ function planDia(f, ctx) {
     const key = temaQueSobra(dados, f, ctx, usados);
     return key ? { key, o: { fuente: "prioridad" } } : null;
   };
-  while (queda >= CUOTA.tareaMinima && tareas.length < 3) {
+  while (queda >= CUOTA.tareaMinima && tareas.length < maxTareas) {
     const sig = siguiente();
     if (!sig) break;
     const t = tarea(sig.key, 0, f, ctx, sig.o);
-    t.min = minutosDeTarea(t, queda, tareas.length);
+    // Deja 15 min para cada examen de mañana que aún no tenga tarea (sin contar este)
+    const reserva = CUOTA.minimoVispera * faltaManana().filter((e) => !sig.o.examen || e.id !== sig.o.examen.id).length;
+    t.min = minutosDeTarea(t, Math.max(CUOTA.tareaMinima, queda - reserva), tareas.length, maxTareas);
     // El repaso de fondo, 25 min como mucho, si después aún cabe otra tarea (si no, se queda lo que hay)
     if (sig.o.fuente === "fondo" && queda - CUOTA.fondo >= CUOTA.tareaMinima) t.min = Math.min(t.min, CUOTA.fondo);
     queda -= t.min;
@@ -1470,7 +1612,7 @@ function planDia(f, ctx) {
     const sinTarea = prox.find((e) => e.dias <= CUOTA.diasVispera && !tareas.some((x) => x.examen === e.id));
     const para = sinTarea || cerca;
     // 3 tareas al día como mucho: con 3, los minutos de más solo alargan las de su examen.
-    const key = extraLibre >= CUOTA.masAparte && tareas.length < 3 ? mejorTema(temasEx(para), f, ctx, usados, para.fecha) : null;
+    const key = extraLibre >= CUOTA.masAparte && tareas.length < maxTareas ? mejorTema(temasEx(para), f, ctx, usados, para.fecha) : null;
     if (key) poner(tarea(key, extraLibre, f, ctx, { fuente: "examen", examen: para }));
     else alargarDelExamen(tareas.filter((x) => x.examen === para.id || x.examen === cerca.id), extraLibre);
   }
@@ -1542,7 +1684,15 @@ function conOrigen(key) {
   return t;
 }
 /* Lo mismo, pero guardándolo en el progreso. Devuelve el estado de antes y el de después. */
+/* Antes de la primera sesión de hoy de un tema, apunta cómo estaba (prog.hoy.antes, para minutosPendientes): así los
+   minutos que piden los exámenes no cambian a media tarde. Hay que llamarla antes de cambiar el tema. */
+function apuntarAntes(key, f) {
+  if (prog.hoy && prog.hoy.fecha === f && !(key in (prog.hoy.antes || {}))) {
+    prog.hoy.antes = Object.assign({}, prog.hoy.antes, { [key]: { estado: estadoDe(key) || "rojo", ultimo: ultimoDe(key) || "" } });
+  }
+}
 function aplicarResultado(key, res, f) {
+  apuntarAntes(key, f);
   const r = calcularResultado(key, res, f);
   prog.temas[key] = r.tema;
   return { antes: r.antes, despues: r.despues };
@@ -1886,7 +2036,7 @@ function proximoDiaEstudio() {
 function vHoy() {
   asegurarPlan();
   const hoy = hoyISO(), pend = pendientes(), hechas = hechasDeVerdad(), cu = cuotaDia(hoy, ctxReal());
-  const sinComodin = cuotaDia(hoy, { ajuste: prog.hoy.ajuste, festivo: prog.hoy.festivo });
+  const sinComodin = cuotaDia(hoy, Object.assign(ctxReal(), { comodin: false }));
   const futuros = examenesVivos().filter((e) => e.fecha > hoy);
   const examenHoy = examenesVivos().filter((e) => e.fecha === hoy);
   const hechasHtml = hechas.length ? `
@@ -1972,15 +2122,16 @@ function vSemana() {
 /* La pantalla «¿Cuánto puedes hoy?»: recortar la cuota de hoy, marcar el día como festivo (con lo que serían sus minutos)
    o tomarse uno de los 2 días libres de la semana. */
 function vAjustar() {
-  const base = cuotaDia(hoyISO(), { festivo: prog.hoy.festivo }).c, actual = prog.hoy.ajuste ?? base;
+  const cu = cuotaDia(hoyISO(), Object.assign(ctxReal(), { ajuste: null, comodin: false })), base = cu.c, actual = prog.hoy.ajuste ?? base;
   const festivo = cuotaDia(hoyISO(), { festivo: true }).c;  // lo de hoy si fuera festivo: la cifra real, no una fija
-  const opciones = [15, 30, 45, 60, 75, 90].filter((m) => m < base);
+  // (nunca menos de lo que necesitan los exámenes de mañana: 15 min cada uno)
+  const opciones = [15, 30, 45, 60, 75, 90, 120, 150].filter((m) => m < base && m >= cu.minimo);
   const usados = comodinesSemana(), quedan = MAX_COMODINES - usados;
   return `
   <button type="button" class="enlace" id="atras" data-accion="ir" data-vista="hoy" style="align-self:flex-start">Atrás</button>
   <div class="pila-s"><h1 class="titulo" tabindex="-1">¿Cuánto puedes hoy?</h1><p class="suave">${!base ? "Hoy no te tocaba estudiar." : opciones.length ? "Hoy te tocaban " + horas(base) + ". Elige menos y el plan se recorta: lo que no hagas no se acumula para mañana." : "Hoy te tocan " + horas(base) + ", lo más corto que reparte la Brújula. Si no llegas, haz lo que puedas: lo que no hagas no se acumula para mañana."}</p></div>
   ${base ? `<fieldset class="pila-s" style="border:0;padding:0;margin:0"><legend class="sr">Minutos para hoy</legend>
-    <div class="pila-s">${opciones.map((m) => opcion("aj", m, m + " min", actual, "ajuste", " larga")).join("")}${opcion("aj", base, "Lo normal: " + horas(base), actual, "ajuste", " larga")}</div></fieldset>
+    <div class="pila-s">${opciones.map((m) => opcion("aj", m, horas(m), actual, "ajuste", " larga")).join("")}${opcion("aj", base, (base > cuotaBase(prog.minutos, prog.minutos, null, false, false).c ? "Lo de hoy: " : "Lo normal: ") + horas(base), actual, "ajuste", " larga")}</div></fieldset>
   <button type="button" class="boton principal grande bloque" data-accion="guardar-ajuste">Guardar</button>` : `<p class="detalle">Hoy ya no te tocaba estudiar.</p>`}
   <div class="pila-s" style="padding-top:24px;border-top:1px solid var(--linea)">
     <p class="tarea-t">¿Hoy no hay clase?</p>
@@ -2285,7 +2436,7 @@ function guardarFin() {
   const practica = t.tipo === "plan" || t.est === "primer" || t.est === "repaso";
   if (t.tipo === "plan") marcarHecha(t.tareaId);
   if (t.key && practica && f.cuanto !== "poco") cambio = aplicarResultado(t.key, f.como, hoy);
-  else if (t.key && t.tipo === "plan") prog.temas[t.key] = Object.assign(conSesion(conOrigen(t.key), hoy), { estado: estadoDe(t.key) || "rojo" });
+  else if (t.key && t.tipo === "plan") { apuntarAntes(t.key, hoy); prog.temas[t.key] = Object.assign(conSesion(conOrigen(t.key), hoy), { estado: estadoDe(t.key) || "rojo" }); }
   guardarProg();
   registrar({ tipo: "reloj", asignatura: t.asig, estudio: t.tipo === "plan" ? "plan" : t.est, tema: t.key || null, plan: t.tipo === "plan", minutos: f.min,
     descartado: !!f.descartado, como: f.como, cuanto: f.cuanto, estadoAntes: cambio ? cambio.antes : null, estadoDespues: cambio ? cambio.despues : null,
@@ -3013,7 +3164,14 @@ function repintar(el, siCambia) {
   const y = window.scrollY, id = el && el.id, hoja = document.getElementById("hoja"), yHoja = hoja ? hoja.scrollTop : 0;
   // En un campo de texto, también dónde estaba el cursor (si no, lo que se teclea después entra al principio)
   const cursor = el && typeof el.selectionStart === "number" ? [el.selectionStart, el.selectionEnd, el.scrollTop] : null;
+  // Si cambia sin que el alumno toque nada, lo que tenía marcado y sin guardar se queda marcado (desde el 19/11/2026:
+  // los minutos de hoy pueden cambiar con un tema cambiado en otra pestaña, y «¿Cuánto puedes hoy?» se repinta)
+  const marcadas = siCambia ? [...app.querySelectorAll('input[type="radio"][name="aj"]:checked')].map((x) => [x.name, x.value]) : [];
   if (!pintar(false, siCambia)) return;
+  for (const [n, v] of marcadas) {
+    const x = [...app.querySelectorAll('input[type="radio"]')].find((r) => r.name === n && r.value === v);
+    if (x) x.checked = true;
+  }
   window.scrollTo(0, y);
   const nueva = document.getElementById("hoja"); if (nueva) nueva.scrollTop = yHoja;
   if (id) {
@@ -3096,7 +3254,7 @@ document.addEventListener("click", (ev) => {
   if (acc === "festivo") { prog.hoy.festivo = !prog.hoy.festivo; prog.hoy.ajuste = null; cambioDeFuera(); return ir("hoy"); }
   if (acc === "guardar-ajuste") {
     const sel = document.querySelector('input[name="aj"]:checked');
-    const base = cuotaDia(hoyISO(), { festivo: prog.hoy.festivo }).c, m = sel ? Number(sel.value) : base;
+    const base = cuotaDia(hoyISO(), Object.assign(ctxReal(), { ajuste: null, comodin: false })).c, m = sel ? Number(sel.value) : base;
     prog.hoy.ajuste = m >= base ? null : m;
     cambioDeFuera(); return ir("hoy");
   }
